@@ -1,5 +1,5 @@
 /* =====================================================================
-   ZEAL ATC — simulation engine
+   AI ATC: simulation engine
    Full aircraft lifecycle (gate → clearance → taxi → takeoff → enroute,
    and arrivals back down to the gate), AI controllers for every position
    the player doesn't hold, phraseology parsing, strips, scoring.
@@ -84,7 +84,7 @@ function addPoints(n, why) {
   G.score += n;
   if (n > 0) G.points += n;
   G.hooks.score();
-  if (why) xmit(G.playerPos, "SYS", n >= 0 ? "sys" : "warn", `${n >= 0 ? "+" : ""}${n} — ${why}`, null);
+  if (why) xmit(G.playerPos, "SYS", n >= 0 ? "sys" : "warn", `${n >= 0 ? "+" : ""}${n}: ${why}`, null);
 }
 
 /* ---------------- runway resolution ---------------- */
@@ -194,37 +194,78 @@ function setOwner(ac, pos, silent) {
   G.hooks.strips();
 }
 
-/* ---------------- pilot initial calls per position ---------------- */
+/* ---------------- pilot initial calls per position ----------------
+   Every call is drawn from a pool of phrasings so the frequency never
+   sounds canned. */
+const BYE = () => pick(["good day", "so long", "seeya", "have a good one", "later"]);
 function pilotCheckIn(ac) {
   ac.called = true;
   const F = G.fac;
+  const alt100 = () => altWords(Math.round(ac.alt / 100) * 100);
   switch (ac.owner) {
     case "DEL":
       ac.clxStage = 1;
-      ac.say(`Clearance, ${ac.spoken()}, gate ${ac.gate.toLowerCase()}, IFR to ${ac.dest.city}, with information ${G.atis.letter}, ready to copy.`);
+      ac.say(pick([
+        `Clearance, ${ac.spoken()}, gate ${ac.gate.toLowerCase()}, IFR to ${ac.dest.city}, with information ${G.atis.letter}, ready to copy.`,
+        `${AI_SHORT(F)} clearance, ${ac.spoken()} at ${ac.gate.toLowerCase()} with ${G.atis.letter}, IFR ${ac.dest.city}, ready to copy when you are.`,
+        `Clearance delivery, good ${G.atis.tod === "night" ? "evening" : "day"}, ${ac.spoken()}, looking for our clearance to ${ac.dest.city}, we have ${G.atis.letter}.`,
+        `Clearance, ${ac.spoken()}, ${ac.dest.city} today, information ${G.atis.letter}, ready to copy.`,
+      ]));
       break;
     case "GND":
-      if (ac.role === "dep") ac.say(`Ground, ${ac.spoken()}, gate ${ac.gate.toLowerCase()} with ${G.atis.letter}, request pushback.`);
-      else ac.say(`Ground, ${ac.spoken()}, clear of runway ${rwyWords(G.arrRwy.id)}, taxi to the gate.`);
+      if (ac.role === "dep") ac.say(pick([
+        `Ground, ${ac.spoken()}, gate ${ac.gate.toLowerCase()} with ${G.atis.letter}, request pushback.`,
+        `${AI_SHORT(F)} ground, ${ac.spoken()}, ready for the push at ${ac.gate.toLowerCase()}.`,
+        `Ground, ${ac.spoken()}, we'd like to push, gate ${ac.gate.toLowerCase()}.`,
+      ]));
+      else ac.say(pick([
+        `Ground, ${ac.spoken()}, clear of runway ${rwyWords(G.arrRwy.id)}, taxi to the gate.`,
+        `Ground, ${ac.spoken()} with you off ${rwyWords(G.arrRwy.id)}, where would you like us?`,
+        `Ground, ${ac.spoken()}, down and clear, gate please.`,
+      ]));
       break;
     case "TWR":
-      if (ac.role === "dep") ac.say(`Tower, ${ac.spoken()}, holding short runway ${rwyWords(G.depRwy.id)}, ready.`);
-      else ac.say(`Tower, ${ac.spoken()}, ${Math.max(1, Math.round(finalGeom(ac, G.arrRwy).along))} mile final, runway ${rwyWords(G.arrRwy.id)}.`);
+      if (ac.role === "dep") ac.say(pick([
+        `Tower, ${ac.spoken()}, holding short runway ${rwyWords(G.depRwy.id)}, ready.`,
+        `Tower, ${ac.spoken()}, ready to go, ${rwyWords(G.depRwy.id)}.`,
+        `${AI_SHORT(F)} tower, ${ac.spoken()}, short of ${rwyWords(G.depRwy.id)}, ready for departure.`,
+      ]));
+      else ac.say(pick([
+        `Tower, ${ac.spoken()}, ${Math.max(1, Math.round(finalGeom(ac, G.arrRwy).along))} mile final, runway ${rwyWords(G.arrRwy.id)}.`,
+        `Tower, ${ac.spoken()} with you on the ILS ${rwyWords(G.arrRwy.id)}.`,
+        `Tower, ${ac.spoken()}, ${Math.max(1, Math.round(finalGeom(ac, G.arrRwy).along))} out for ${rwyWords(G.arrRwy.id)}.`,
+      ]));
       break;
     case "APP":
-      if (ac.role === "dep") ac.say(`${F.tracon}, ${ac.spoken()}, passing ${altWords(Math.round(ac.alt / 100) * 100)} for ${altWords(ac.assignedAlt || F.initAlt)}, ${ac.sid.name} departure.`);
-      else ac.say(`${F.tracon}, ${ac.spoken()}, ${altWords(Math.round(ac.alt / 100) * 100)} descending via the ${ac.star}, information ${G.atis.letter}.${ac.medevac ? " Medevac." : ""}`);
+      if (ac.role === "dep") ac.say(pick([
+        `${F.tracon}, ${ac.spoken()}, passing ${alt100()} for ${altWords(ac.assignedAlt || F.initAlt)}, ${ac.sid.name} departure.`,
+        `Departure, ${ac.spoken()} with you out of ${alt100()}, ${ac.sid.name}.`,
+        `${F.tracon}, ${ac.spoken()}, climbing through ${alt100()} on the ${ac.sid.name}.`,
+      ]));
+      else ac.say(pick([
+        `${F.tracon}, ${ac.spoken()}, ${alt100()} descending via the ${ac.star}, information ${G.atis.letter}.${ac.medevac ? " Medevac." : ""}`,
+        `Approach, ${ac.spoken()} with you, ${alt100()} on the ${ac.star}, we have ${G.atis.letter}.${ac.medevac ? " Medevac." : ""}`,
+        `${F.tracon}, good ${G.atis.tod === "night" ? "evening" : "day"}, ${ac.spoken()}, descending via the ${ac.star} with ${G.atis.letter}.${ac.medevac ? " Medevac flight." : ""}`,
+      ]));
       break;
     case "CTR":
-      if (ac.role === "dep") ac.say(`${F.centerName}, ${ac.spoken()}, climbing ${altWords(Math.round(ac.alt / 100) * 100)}.`);
-      else ac.say(`${F.centerName}, ${ac.spoken()}, ${altWords(ac.alt)}, inbound ${ac.entryFix.name}.${ac.medevac ? " Medevac, we have a patient on board." : ""}`);
+      if (ac.role === "dep") ac.say(pick([
+        `${F.centerName}, ${ac.spoken()}, climbing ${alt100()}.`,
+        `Center, ${ac.spoken()} with you, out of ${alt100()}.`,
+        `${F.centerName}, ${ac.spoken()}, passing ${alt100()} on the climb.`,
+      ]));
+      else ac.say(pick([
+        `${F.centerName}, ${ac.spoken()}, ${altWords(ac.alt)}, inbound ${ac.entryFix.name}.${ac.medevac ? " Medevac, we have a patient on board." : ""}`,
+        `Center, ${ac.spoken()} level ${altWords(ac.alt)}, ${ac.entryFix.name} arrival.${ac.medevac ? " Medevac." : ""}`,
+        `${F.centerName}, ${ac.spoken()} checking in at ${altWords(ac.alt)} for ${ac.entryFix.name}.${ac.medevac ? " We're a medevac flight." : ""}`,
+      ]));
       break;
   }
   if (ac.owner !== G.playerPos) ac.aiAt = G.t + rnd(2.5, 7);
 }
 
 /* =====================================================================
-   AI CONTROLLERS — each runs its position when the player doesn't
+   AI CONTROLLERS: each runs its position when the player doesn't
    ===================================================================== */
 function aiSay(pos, text) {
   xmit(pos, ctrlCallsign(pos), "ctrl", text, G.ctrlVoice[pos]);
@@ -242,7 +283,11 @@ function aiDEL(ac) {
     ac.clxStage = 3;
     ac.aiAt = G.t + rnd(2, 4);
   } else if (ac.clxStage === 3) {
-    aiSay("DEL", `${ac.spoken()}, readback correct. Call ground for push, have a good flight.`);
+    aiSay("DEL", pick([
+      `${ac.spoken()}, readback correct. Call ground for push, have a good flight.`,
+      `${ac.spoken()}, readback correct, ground when ready.`,
+      `Readback correct, ${ac.spoken()}, ${BYE()}.`,
+    ]));
     ac.state = "clxOk";
     ac.stateT = 0;
     ac.aiAt = 0;
@@ -260,21 +305,37 @@ function aiGND(ac) {
   const F = G.fac;
   if (ac.role === "dep") {
     if (ac.state === "gndCall" && ac.called) {
-      aiSay("GND", `${ac.spoken()}, pushback approved, expect runway ${rwyWords(G.depRwy.id)}.`);
+      aiSay("GND", pick([
+        `${ac.spoken()}, pushback approved, expect runway ${rwyWords(G.depRwy.id)}.`,
+        `${ac.spoken()}, push approved, tail wherever works, runway ${rwyWords(G.depRwy.id)} today.`,
+        `${ac.spoken()}, push at your discretion, advise ready to taxi.`,
+      ]));
       startPush(ac);
     } else if (ac.state === "taxiWait" && ac.called) {
       const tx = G.fac.taxi[G.depRwy.id];
-      aiSay("GND", `${ac.spoken()}, runway ${rwyWords(G.depRwy.id)}, taxi via ${tx.names}, hold short.`);
+      aiSay("GND", pick([
+        `${ac.spoken()}, runway ${rwyWords(G.depRwy.id)}, taxi via ${tx.names}, hold short.`,
+        `${ac.spoken()}, taxi runway ${rwyWords(G.depRwy.id)} via ${tx.names}, hold short of the runway.`,
+        `${ac.spoken()}, ${rwyWords(G.depRwy.id)} via ${tx.names}, hold short, follow company if you see them.`,
+      ]));
       startTaxi(ac);
     } else if (ac.state === "holdShortG") {
-      aiSay("GND", `${ac.spoken()}, monitor tower ${freqWords(F.freqs.TWR)}, good day.`);
+      aiSay("GND", pick([
+        `${ac.spoken()}, monitor tower ${freqWords(F.freqs.TWR)}, ${BYE()}.`,
+        `${ac.spoken()}, over to tower ${freqWords(F.freqs.TWR)}, ${BYE()}.`,
+        `${ac.spoken()}, tower's ${freqWords(F.freqs.TWR)}, ${BYE()}.`,
+      ]));
       ac.state = "holdShort";
       setOwner(ac, "TWR", false);
     }
   } else {
     if (ac.state === "gndIn" && ac.called) {
       const txIn = G.fac.taxi["in_" + G.arrRwy.id];
-      aiSay("GND", `${ac.spoken()}, taxi to the gate via ${txIn.names}, welcome in.`);
+      aiSay("GND", pick([
+        `${ac.spoken()}, taxi to the gate via ${txIn.names}, welcome in.`,
+        `${ac.spoken()}, gate's yours via ${txIn.names}.`,
+        `${ac.spoken()}, taxi to parking via ${txIn.names}, nice to have you.`,
+      ]));
       startTaxiIn(ac);
     }
   }
@@ -299,15 +360,16 @@ function startTaxiIn(ac) {
 
 function runwayFreeForTakeoff() {
   /* nobody rolling/lined up on the dep runway, arrival final clear */
+  const sameRwy = G.arrRwy.id === G.depRwy.id;
   for (const o of G.aircraft) {
     if ((o.state === "rolling" || o.state === "lineup") && !o.remove) return false;
     if (o.state === "climb" && o.alt < 400) return false;
+    if (sameRwy && o.state === "landedRoll") return false;
   }
-  for (const o of G.aircraft) {
-    if (o.role === "arr" && (o.state === "appCtl" || o.state === "twrArr") && o.app === "established") {
-      if (finalGeom(o, G.arrRwy).along < 4) {
-        if (G.arrRwy.id === G.depRwy.id) return false;
-      }
+  if (sameRwy) {
+    for (const o of G.aircraft) {
+      if (o.role === "arr" && (o.state === "appCtl" || o.state === "twrArr") &&
+          o.app === "established" && finalGeom(o, G.arrRwy).along < 6) return false;
     }
   }
   return true;
@@ -317,7 +379,11 @@ function aiTWR(ac) {
   const F = G.fac;
   if (ac.role === "dep") {
     if (ac.state === "holdShort" && ac.called && runwayFreeForTakeoff()) {
-      aiSay("TWR", `${ac.spoken()}, wind ${hdgWords(G.atis.windDir)} at ${numWords(G.atis.windSpd)}, runway ${rwyWords(G.depRwy.id)}, cleared for takeoff.`);
+      aiSay("TWR", pick([
+        `${ac.spoken()}, wind ${hdgWords(G.atis.windDir)} at ${numWords(G.atis.windSpd)}, runway ${rwyWords(G.depRwy.id)}, cleared for takeoff.`,
+        `${ac.spoken()}, runway ${rwyWords(G.depRwy.id)}, cleared for takeoff, wind ${hdgWords(G.atis.windDir)} at ${numWords(G.atis.windSpd)}.`,
+        `${ac.spoken()}, no delay, runway ${rwyWords(G.depRwy.id)}, cleared for takeoff.`,
+      ]));
       ac.say(`Cleared for takeoff runway ${rwyWords(G.depRwy.id)}, ${ac.spoken()}.`);
       startRoll(ac);
     } else if (ac.state === "climb" && ac.alt >= 700) {
@@ -326,13 +392,17 @@ function aiTWR(ac) {
       ac.state = "depCtl"; ac.stateT = 0;
       setOwner(ac, "APP", false);
     } else if (ac.state === "climb") {
-      ac.aiAt = G.t + 3;                       // not through 700 ft yet — check again
+      ac.aiAt = G.t + 3;                       // not through 700 ft yet, check again
     } else if (ac.state === "holdShort" && ac.called) {
       ac.aiAt = G.t + 6;                       // wait for the runway
     }
   } else {
     if (ac.state === "twrArr" && ac.called && !ac.landClr) {
-      aiSay("TWR", `${ac.spoken()}, wind ${hdgWords(G.atis.windDir)} at ${numWords(G.atis.windSpd)}, runway ${rwyWords(G.arrRwy.id)}, cleared to land.`);
+      aiSay("TWR", pick([
+        `${ac.spoken()}, wind ${hdgWords(G.atis.windDir)} at ${numWords(G.atis.windSpd)}, runway ${rwyWords(G.arrRwy.id)}, cleared to land.`,
+        `${ac.spoken()}, runway ${rwyWords(G.arrRwy.id)}, cleared to land, wind ${hdgWords(G.atis.windDir)} at ${numWords(G.atis.windSpd)}.`,
+        `${ac.spoken()}, number one, runway ${rwyWords(G.arrRwy.id)}, cleared to land.`,
+      ]));
       ac.say(`Cleared to land runway ${rwyWords(G.arrRwy.id)}, ${ac.spoken()}.`);
       ac.landClr = true;
     } else if (ac.state === "rwyExit") {
@@ -530,8 +600,9 @@ function stepAircraft(ac, dt) {
     ac.aiAt = 0;
     AI_FN[ac.owner](ac);
   }
-  /* pilot nag when the player sits on them */
-  if (ac.owner === G.playerPos && ac.called && ac.reminders < 2) {
+  /* pilot nag when the player sits on them (suppressed after "stand by") */
+  if (ac.owner === G.playerPos && ac.called && ac.reminders < 2 &&
+      (!ac.standbyAt || G.t - ac.standbyAt > 150)) {
     const stale = ["gate", "gndCall", "taxiWait", "holdShort", "gndIn"].includes(ac.state) && ac.stateT > 100 + ac.reminders * 80;
     const staleAir = (ac.state === "ctrArr" || ac.state === "appCtl") && !ac.app && ac.stateT > 150 + ac.reminders * 100;
     if (stale || staleAir) {
@@ -560,7 +631,7 @@ function stepAircraft(ac, dt) {
       const path = ac.taxiPath;
       if (!path || ac.taxiIdx >= path.length) return;
       if (ac.holdFlag) return;                       // told to hold position
-      /* simple in-trail spacing on the ground — stopped traffic blocks too */
+      /* simple in-trail spacing on the ground; stopped traffic blocks too */
       for (const o of G.aircraft) {
         if (o !== ac && ["taxi", "taxiIn", "holdShortG", "holdShort"].includes(o.state) &&
             dist2(ac, o) < 0.09 && sameDirAhead(ac, o)) return;
@@ -680,10 +751,12 @@ function flightStep(ac, dt) {
     if (g.along <= 4 && ac.alt > gsA + 600) { doGoAround(ac, "too high"); return; }
     if (ac.gaFlag && g.along < 1.4) { doGoAround(ac, "wind shear on short final"); return; }
     if (g.along < 1.0 && !ac.landClr && ac.state === "twrArr") { doGoAround(ac, "no landing clearance"); return; }
-    /* runway blocked by a previous arrival */
+    /* runway blocked by a previous arrival, or a departure on a shared runway */
     if (g.along < 1.3) {
       for (const o of G.aircraft) {
-        if (o !== ac && o.role === "arr" && (o.state === "landedRoll") && !o.remove) { doGoAround(ac, "traffic on the runway"); return; }
+        if (o === ac || o.remove) continue;
+        if (o.role === "arr" && o.state === "landedRoll") { doGoAround(ac, "traffic on the runway"); return; }
+        if (G.arrRwy.id === G.depRwy.id && ["lineup", "rolling"].includes(o.state)) { doGoAround(ac, "traffic on the runway"); return; }
       }
     }
     if (g.along <= 0.35 && ac.alt <= 160) { touchdown(ac); return; }
@@ -713,7 +786,7 @@ function flightStep(ac, dt) {
   /* handoff hints toward the player */
   if (ac.owner === "TWR" && ac.state === "climb" && G.playerPos === "TWR" && ac.alt > 1600 && !ac.nagCd) {
     ac.nagCd = true;
-    ac.say(`${ac.spoken()}, passing ${altWords(Math.round(ac.alt / 100) * 100)} — switch to departure?`);
+    ac.say(`${ac.spoken()}, passing ${altWords(Math.round(ac.alt / 100) * 100)}, switch to departure?`);
   }
   if (ac.role === "arr" && ac.owner === "APP" && G.playerPos === "APP" &&
       ac.app === "established" && finalGeom(ac, G.arrRwy).along < 6 && !ac.nagTwr) {
@@ -795,7 +868,7 @@ function checkSeparation() {
           G.counters.sep++;
           alertTone();
           const mine = a.owner === G.playerPos || b.owner === G.playerPos;
-          xmit(G.playerPos, "SYS", "warn", `LOSS OF SEPARATION: ${a.cs} / ${b.cs} — ${h.toFixed(1)} nm, ${Math.round(v)} ft.`, null);
+          xmit(G.playerPos, "SYS", "warn", `LOSS OF SEPARATION: ${a.cs} / ${b.cs}, ${h.toFixed(1)} nm, ${Math.round(v)} ft.`, null);
           if (mine) addPoints(-20, "separation loss on your frequency");
         }
       } else if (v < 1500) newProx.add(key);
@@ -849,34 +922,34 @@ function normalizeTx(text) {
   return wordsToNumbers(s);
 }
 
+/* Token-based matcher: joins adjacent tokens so speech transcripts like
+   "speed bird 68" or "fed ex 33" still resolve to the right aircraft. */
 function matchCallsign(s) {
-  let best = null, bestLen = 0, bestIdx = Infinity;
+  const toks = s.split(" ");
+  let best = null, bestStart = Infinity, bestLen = 0, bestSpan = null;
   for (const ac of G.aircraft) {
     if (ac.remove) continue;
-    const forms = [
+    const targets = [
       ac.cs.toLowerCase(),
-      ac.airline.code.toLowerCase() + " " + ac.num,
-      ac.airline.tel.toLowerCase() + " " + ac.num,
-      ac.airline.tel.toLowerCase().replace(/\s+/g, "") + " " + ac.num,
+      ac.airline.code.toLowerCase() + ac.num,
+      ac.airline.tel.toLowerCase().replace(/\s+/g, "") + ac.num,
     ];
-    for (const f of forms) {
-      const idx = s.indexOf(f);
-      if (idx !== -1 && (idx < bestIdx || (idx === bestIdx && f.length > bestLen))) {
-        best = ac; bestLen = f.length; bestIdx = idx;
+    for (let i = 0; i < toks.length; i++) {
+      let joined = "";
+      for (let j = i; j < Math.min(toks.length, i + 5); j++) {
+        joined += toks[j];
+        if (joined.length > 18) break;
+        if (targets.includes(joined) &&
+            (i < bestStart || (i === bestStart && joined.length > bestLen))) {
+          best = ac; bestStart = i; bestLen = joined.length; bestSpan = [i, j];
+        }
       }
     }
   }
   if (!best) return [null, s];
-  let rem = s;
-  for (const f of [
-    best.airline.tel.toLowerCase() + " " + best.num,
-    best.airline.tel.toLowerCase().replace(/\s+/g, "") + " " + best.num,
-    best.airline.code.toLowerCase() + " " + best.num,
-    best.cs.toLowerCase(),
-  ]) {
-    if (rem.includes(f)) { rem = rem.replace(f, " "); break; }
-  }
-  return [best, rem.replace(/\bheavy\b/, " ").replace(/\s+/g, " ").trim()];
+  const rem = toks.filter((_, k) => k < bestSpan[0] || k > bestSpan[1]).join(" ")
+    .replace(/\bheavy\b/, " ").replace(/\s+/g, " ").trim();
+  return [best, rem];
 }
 
 const CMD_PATTERNS = [
@@ -907,6 +980,8 @@ const CMD_PATTERNS = [
   { t: "toApp", re: /\bcontact\s+approach\b(?:\s+\d+)?|\bcap\b/,                     f: () => ({}) },
   { t: "toCtr", re: /\bcontact\s+(?:center|centre)\b(?:\s+\d+)?|\bcc\b/,             f: () => ({}) },
   { t: "exit",  re: /\bexit\s+(?:left|right|\w+)?\s*when\s+able\b/,                  f: () => ({}) },
+  { t: "stby",  re: /\bstand\s?by\b|\bhold\s+on\b/,                                  f: () => ({}) },
+  { t: "rgr",   re: /\brog(?:er)?\b|\bthanks?\b|\bgood\s+day\b|\bwilco\b/,           f: () => ({}) },
 ];
 
 function parseCommands(s) {
@@ -927,8 +1002,10 @@ function parseCommands(s) {
 function parseClearance(ac, s) {
   const F = G.fac;
   const clx = ac.clx;
+  /* any distinctive word of the city counts, so "Chicago" alone works for Chicago O'Hare */
   const cityNorm = ac.dest.city.toLowerCase().replace(/[.'-]+/g, " ").replace(/\s+/g, " ").trim();
-  if (s.includes(cityNorm) || s.includes(ac.dest.icao.toLowerCase())) clx.dest = true;
+  const cityWords = cityNorm.split(" ").filter(w => w.length >= 4);
+  if (cityWords.some(w => s.includes(w)) || s.includes(ac.dest.icao.toLowerCase())) clx.dest = true;
   const sidBase = ac.sid.name.toLowerCase().replace(/\d+$/, "");
   if (s.includes(sidBase) || s.includes("as filed")) clx.sid = true;
   const mAlt = s.match(/\b(?:climb(?:\s+and)?(?:\s+maintain)?|maintain)\s+(\d{3,5})\b/);
@@ -948,10 +1025,13 @@ function clearanceFlow(ac, s) {
   if (!c.alt) missing.push("say again the initial altitude?");
   if (!c.sqkSaid) missing.push("say again the squawk?");
   if (missing.length) {
-    setTimeout(() => ac.say(`${ac.spoken()}, ${missing[0]}`), 900);
+    if (!ac.lastAskAt || G.t - ac.lastAskAt > 12) {   // don't nag the same question
+      ac.lastAskAt = G.t;
+      setTimeout(() => { if (!ac.remove) ac.say(`${ac.spoken()}, ${missing[0]}`); }, 900);
+    }
     return;
   }
-  /* full readback — maybe with an induced error the player must catch */
+  /* full readback, maybe with an induced error the player must catch */
   ac.clxStage = 2;
   let rbSqk = c.sqkSaid, rbAlt = F.initAlt;
   if (!ac.rbError && Math.random() < 0.28) {
@@ -966,7 +1046,7 @@ function clearanceFlow(ac, s) {
       rbAlt = rbAlt + (Math.random() < 0.5 ? 1000 : -1000);
     }
   }
-  if (!c.sqkOk) xmit("DEL", "SYS", "warn", `Strip shows ${ac.cs} was assigned squawk ${ac.sqk} — you said ${c.sqkSaid}.`, null);
+  if (!c.sqkOk) xmit("DEL", "SYS", "warn", `Strip shows ${ac.cs} was assigned squawk ${ac.sqk}, you said ${c.sqkSaid}.`, null);
   const delay = rnd(2.5, 5);
   const text = `Cleared to ${ac.dest.city} via the ${ac.sid.name}${c.sid ? "" : ""} then as filed, up to ${altWords(rbAlt)}, ${freqWords(F.freqs.APP)}, squawk ${numWords(rbSqk)}, ${ac.spoken()}.`;
   ac.pendingRb = { due: G.t + delay, text };
@@ -975,7 +1055,7 @@ function clearanceFlow(ac, s) {
 function verdictReadback(ac, ok) {
   if (ac.clxStage !== 2) { ac.say(`${ac.spoken()}, say again?`); return; }
   if (ok && ac.rbError) {
-    /* player blessed a bad readback — the error stands until rotation */
+    /* player blessed a bad readback; the error stands until rotation */
     ac.clxStage = 3;
     finishClearance(ac);
   } else if (ok) {
@@ -989,11 +1069,11 @@ function verdictReadback(ac, ok) {
       ac.rbError = null;
       addPoints(6, `caught ${ac.cs}'s bad ${e.field} readback`);
       G.counters.clx++;
-      ac.say(`Ah sorry — ${e.field === "squawk" ? "squawk " + numWords(String(e.right)) : altWords(e.right)}, ${ac.spoken()}.`);
+      ac.say(`Ah sorry, ${e.field === "squawk" ? "squawk " + numWords(String(e.right)) : altWords(e.right)}, ${ac.spoken()}.`);
       ac.clxStage = 3;
       finishClearance(ac, true);
     } else {
-      ac.say(`${ac.spoken()}, we believe the readback was correct — say again?`);
+      ac.say(`${ac.spoken()}, we believe the readback was correct, say again?`);
     }
   }
 }
@@ -1160,6 +1240,13 @@ function execOps(ac, ops) {
         } else unable.push("center");
         break;
       case "exit": parts.push("will do"); break;
+      case "stby":
+        ac.standbyAt = G.t;
+        parts.push("standing by");
+        break;
+      case "rgr":
+        if (ops.length === 1) return;          // a bare acknowledgment needs no readback
+        break;
       case "rbok": verdictReadback(ac, true); return;
       case "rbbad": verdictReadback(ac, false); return;
     }
@@ -1180,11 +1267,27 @@ function playerTransmit(raw) {
   let [ac, rest] = matchCallsign(norm);
   if (!ac) {
     if (G.selected && !G.selected.remove) { ac = G.selected; rest = norm; }
-    else { sysLog("Nobody answered — address a callsign, or click a strip/target first."); return; }
+    else { sysLog("Nobody answered. Address a callsign, or click a strip/target first."); return; }
   }
   G.selected = ac;
   G.hooks.strips();
   if (ac.owner !== G.playerPos) { sysLog(`${ac.cs} is not on your frequency (with ${ac.owner}).`); return; }
+
+  /* conversational intents any pilot understands */
+  if (/\bstand\s?by\b|\bhold\s+on\b|\bexpect\s+clearance\b|\bcall\s+you\s+back\b|\bbe\s+with\s+you\b/.test(rest)) {
+    ac.standbyAt = G.t;
+    ac.reminders = Math.min(ac.reminders, 1);
+    setTimeout(() => { if (!ac.remove) ac.say(`Standing by, ${ac.spoken()}.`); }, 800);
+    return;
+  }
+  if (/\b(?:confirm|say|verify)\b[\w\s]*\bdestination\b/.test(rest) && ac.role === "dep") {
+    setTimeout(() => { if (!ac.remove) ac.say(`${ac.spoken()}, we're IFR to ${ac.dest.city}.`); }, 800);
+    return;
+  }
+  if (/\bsay\s+again\b|\brepeat\b/.test(rest)) {
+    setTimeout(() => { if (!ac.remove) pilotCheckIn(ac); }, 800);
+    return;
+  }
 
   /* Clearance-delivery flow gets its own grammar */
   if (G.playerPos === "DEL" && ac.state === "gate" && ac.clxStage >= 1) {
@@ -1194,7 +1297,16 @@ function playerTransmit(raw) {
     if (ac.clxStage === 2 && /\bsquawk\s+\d{4}\b|\baltitude\b|\bmaintain\b/.test(rest)) {
       verdictReadback(ac, false); return;    // restating an item = correcting the readback
     }
-    clearanceFlow(ac, rest);
+    /* only treat it as a clearance if it actually contains clearance content */
+    if (/\bcleared\b|\bsquawk\b|\bmaintain\b|\bclimb\b|\bdeparture\b|\bfiled\b|\bfrequency\b/.test(rest) ||
+        (() => { const before = { ...ac.clx }; parseClearance(ac, rest);
+                 return JSON.stringify(before) !== JSON.stringify(ac.clx); })()) {
+      clearanceFlow(ac, rest);
+    } else if (/\brog(?:er)?\b|\bthanks?\b|\bgood\s+day\b/.test(rest)) {
+      /* just an acknowledgment, no reply needed */
+    } else {
+      setTimeout(() => { if (!ac.remove) ac.say(`${ac.spoken()}, sorry, say again?`); }, 800);
+    }
     return;
   }
   const { ops } = parseCommands(rest);
@@ -1204,25 +1316,63 @@ function playerTransmit(raw) {
 
 /* =====================================================================
    INTERCOM (landlines to the AI positions)
+   Replies are generated from the position's actual traffic picture and
+   drawn from phrase pools, so no two calls sound alike.
    ===================================================================== */
 function intercom(pos, action) {
   if (pos === G.playerPos) return;
   landlineChime();
   const who = ctrlCallsign(pos);
   const mine = G.aircraft.filter(a => a.owner === pos && !a.remove);
+  const busyWord = mine.length === 0 ? pick(["dead quiet", "nothing going on", "quiet"])
+    : mine.length <= 2 ? pick(["pretty relaxed", "light", "just a couple"])
+    : mine.length <= 5 ? pick(["steady", "keeping busy", "decent push"])
+    : pick(["getting slammed", "busy as anything", "buried right now"]);
   let reply;
   if (action === "status") {
-    reply = mine.length
-      ? `${POS_NAME[pos]} here — working ${mine.length}: ${mine.slice(0, 4).map(a => a.cs).join(", ")}${mine.length > 4 ? "…" : ""}.`
-      : `${POS_NAME[pos]}, quiet at the moment.`;
+    const detail = {
+      DEL: () => {
+        const w = mine.filter(a => a.clxStage < 3).length;
+        return w ? `${w} still waiting on clearances` : "everybody's cleared";
+      },
+      GND: () => {
+        const t = mine.filter(a => ["taxi", "push"].includes(a.state)).length;
+        return t ? `${t} moving on the surface` : "nobody moving";
+      },
+      TWR: () => {
+        const hs = mine.filter(a => ["holdShort", "lineup"].includes(a.state)).length;
+        const fin = mine.filter(a => a.state === "twrArr").length;
+        return `${hs} in the queue, ${fin} on final`;
+      },
+      APP: () => {
+        const arr = mine.filter(a => a.role === "arr").length;
+        return `${arr} inbound${arr === 1 ? "" : "s"} on the scope`;
+      },
+      CTR: () => `${mine.length} in the sector`,
+    }[pos]();
+    reply = pick([
+      `${POS_NAME[pos]}, ${busyWord}, ${detail}.`,
+      `Yeah, ${busyWord} over here. ${detail.charAt(0).toUpperCase() + detail.slice(1)}.`,
+      `${who}, ${detail}, ${busyWord} otherwise.`,
+    ]);
+    if (mine.length && Math.random() < 0.5) reply += ` ${pick(["First up is", "Watching", "Next one's"])} ${mine[0].cs}.`;
   } else if (action === "handoff" && G.selected) {
-    reply = `${who}, radar contact on ${G.selected.cs}, send them over when ready.`;
+    reply = pick([
+      `${who}, radar contact on ${G.selected.cs}, send them over when ready.`,
+      `Yeah, I see ${G.selected.cs}, ship them anytime.`,
+      `${G.selected.cs}? Approved, flash the strip.`,
+      `Take a gap and send ${G.selected.cs} across, I've got the picture.`,
+    ]);
   } else if (action === "pointout" && G.selected) {
-    reply = `${who}, point out approved on ${G.selected.cs}.`;
+    reply = pick([
+      `${who}, point out approved on ${G.selected.cs}.`,
+      `Point out on ${G.selected.cs}, approved, my traffic's no factor.`,
+      `Roger the point out, ${G.selected.cs}, keep them.`,
+    ]);
   } else {
-    reply = `${who}, go ahead.`;
+    reply = pick([`${who}, go ahead.`, `${who}.`, `Go for ${who}.`]);
   }
-  xmit("INT", "YOU", "you", `(landline → ${who}) ${action}${G.selected ? " " + G.selected.cs : ""}`, null);
+  xmit("INT", "YOU", "you", `(landline to ${who}) ${action}${G.selected ? " " + G.selected.cs : ""}`, null);
   setTimeout(() => xmit("INT", who, "ctrl", reply, G.ctrlVoice[pos]), 700);
 }
 
@@ -1236,7 +1386,7 @@ function intercomNags() {
     if (waiting.length >= 2) {
       landlineChime();
       xmit("INT", ctrlCallsign("GND"), "ctrl",
-        `Clearance, Ground — I've got ${waiting.length} at the gates still waiting on clearances, can you work them?`, G.ctrlVoice.GND);
+        `Clearance, Ground, I've got ${waiting.length} at the gates still waiting on clearances, can you work them?`, G.ctrlVoice.GND);
     }
   }
 }
@@ -1252,8 +1402,9 @@ function genAtis(fac, cfg) {
   const windSpd = Math.floor(rnd(4, 18));
   const qnh = (29.6 + rnd(0, 0.8)).toFixed(2).replace(".", "");
   const tod = pick(["day", "day", "dusk", "night"]);
+  const temp = Math.floor(rnd(4, 33));
   return {
-    letter, windDir, windSpd, qnh, tod,
+    letter, windDir, windSpd, qnh, tod, temp, dew: temp - Math.floor(rnd(2, 13)),
     vis: pick(["one zero", "one zero", "seven", "five"]),
     sky: pick(["sky clear", "few clouds at two five zero zero", "scattered four thousand", "broken eight thousand"]),
     text: null,
@@ -1292,7 +1443,7 @@ function startSession(facIdx, playerPos, density) {
   G.rates = r;
   G.running = true;
 
-  sysLog(`Session open: ${F.icao} ${cfg.name} — you are ${ctrlCallsign(playerPos)} (${POS_NAME[playerPos]}) on ${F.freqs[playerPos]}.`);
+  sysLog(`Session open: ${F.icao} ${cfg.name}. You are ${ctrlCallsign(playerPos)} (${POS_NAME[playerPos]}) on ${F.freqs[playerPos]}.`);
   sysLog(`ATIS ${G.atis.letter}: wind ${G.atis.windDir}/${String(G.atis.windSpd).padStart(2, "0")}, landing ${G.arrRwy.id}, departing ${G.depRwy.id}. All other positions are AI-staffed.`);
   /* opening traffic */
   for (let i = 0; i < (density === "high" ? 3 : 2); i++) spawnDep(i * 15);
@@ -1317,11 +1468,11 @@ function spawnArr() {
 
 function randomEvent() {
   const roll = Math.random();
-  if (roll < 0.35) return;
+  if (roll < 0.45) return;
   if (roll < 0.55) {
     const arr = G.aircraft.find(a => a.role === "arr" && a.state === "appCtl");
     if (arr) { arr.gaFlag = true; }               // gust waiting on short final
-  } else if (roll < 0.75) {
+  } else if (roll < 0.8) {
     const tx = G.aircraft.find(a => a.state === "taxi" && !a.holdFlag);
     if (tx) {
       tx.holdFlag = true;

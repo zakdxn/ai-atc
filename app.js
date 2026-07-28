@@ -1,13 +1,16 @@
 /* =====================================================================
-   ZEAL ATC — UI orchestration: menu, ratings/career, strips, comm tabs,
-   intercom, header, help, main loop.
+   AI ATC: UI orchestration. Menu, ratings/career, strips, comm tabs,
+   intercom, SOPs, header, help, main loop.
    ===================================================================== */
 "use strict";
 
 /* ---------------- career / ratings ---------------- */
-const CAREER_KEY = "zealAtcCareer";
+const CAREER_KEY = "aiAtcCareer";
 let career = { pts: 0, sandbox: false };
-try { career = { ...career, ...(JSON.parse(localStorage.getItem(CAREER_KEY)) || {}) }; } catch (e) {}
+try {
+  const legacy = JSON.parse(localStorage.getItem("zealAtcCareer"));
+  career = { ...career, ...(legacy || {}), ...(JSON.parse(localStorage.getItem(CAREER_KEY)) || {}) };
+} catch (e) {}
 function saveCareer() { try { localStorage.setItem(CAREER_KEY, JSON.stringify(career)); } catch (e) {} }
 function ratingFor(pts) {
   let r = RATINGS[0];
@@ -30,28 +33,30 @@ function syncCareer() {
     const after = ratingFor(career.pts);
     if (after.id !== before) {
       chime();
-      xmit(G.playerPos, "SYS", "sys", `RATING UPGRADE — you are now ${after.id} (${after.name}). New positions unlocked.`, null);
+      xmit(G.playerPos, "SYS", "sys", `RATING UPGRADE: you are now ${after.id} (${after.name}). New positions unlocked.`, null);
     }
   }
 }
 
 /* ---------------- menu ---------------- */
-let selFac = 0, selPos = "DEL";
+let selFac = Math.max(0, FACILITIES.findIndex(f => f.artcc === "ZNY"));
+let selPos = "DEL";
 function renderMenu() {
   const r = ratingFor(career.pts);
   const el = document.getElementById("menucard");
   el.innerHTML = `
-    <h2>ZEAL ATC NETWORK</h2>
-    <p class="dimtxt">A VATSIM-style controller network where every pilot — and every other controller — is an AI.
-    Pick an ARTCC and a position. Unstaffed positions are worked by AI controllers you can coordinate with;
-    flight strips pass between positions; scenarios (wind, runway config, traffic, events) are randomized every session.</p>
+    <h2>AI ATC</h2>
+    <p class="dimtxt">A VATSIM-style controller network where every pilot, and every other controller, is an AI.
+    Pick an ARTCC and a position. Unstaffed positions are worked by AI controllers you coordinate with over
+    landlines; flight strips pass between positions; wind, runway configuration, traffic and events are rolled
+    fresh every session. Displays are modeled on the ones in CRC (STARS, ASDE-X, Tower Cab).</p>
 
-    <h4>1 · CHOOSE YOUR ARTCC</h4>
+    <h4>1 · CHOOSE YOUR ARTCC (all ${FACILITIES.length} VATUSA facilities)</h4>
     <div class="facgrid">${FACILITIES.map((f, i) => `
       <div class="faccard ${i === selFac ? "sel" : ""}" data-f="${i}">
-        <div class="artcc">${f.artcc} — ${f.artccName}</div>
+        <div class="artcc">${f.artcc} · ${f.artccName}</div>
         <div class="ap">${f.icao} · ${f.apName}</div>
-        <div class="meta">TRACON: ${f.tracon}<br>DEL ${f.freqs.DEL} · GND ${f.freqs.GND} · TWR ${f.freqs.TWR}<br>APP ${f.freqs.APP} · CTR ${f.freqs.CTR}</div>
+        <div class="meta">${f.tracon}</div>
       </div>`).join("")}</div>
 
     <h4>2 · CHOOSE YOUR POSITION</h4>
@@ -64,10 +69,10 @@ function renderMenu() {
     }).join("")}</div>
 
     <div class="ratebox">
-      Your rating: <b>${r.id} — ${r.name}</b> · ${career.pts} pts
-      <br><span class="dimtxt">${RATINGS.map(rt => `${rt.id} ${rt.pts}+`).join(" · ")} — earn points by working traffic correctly, VATSIM-style
-      (<a href="https://vatsim.net/docs/basics/becoming-a-controller/" target="_blank" style="color:var(--cyan)">how the real ratings work</a>).</span>
-      <br><label style="cursor:pointer"><input type="checkbox" id="sandbox" ${career.sandbox ? "checked" : ""}> Sandbox — unlock all positions</label>
+      Your rating: <b>${r.id} · ${r.name}</b> · ${career.pts} pts
+      <br><span class="dimtxt">${RATINGS.map(rt => `${rt.id} ${rt.pts}+`).join(" · ")}. Earn points by working traffic
+      correctly, modeled on <a href="https://vatsim.net/docs/basics/becoming-a-controller/" target="_blank" style="color:var(--cyan)">VATSIM's controller ratings</a>.</span>
+      <br><label style="cursor:pointer"><input type="checkbox" id="sandbox" ${career.sandbox ? "checked" : ""}> Sandbox: unlock all positions</label>
     </div>
 
     <div class="menurow">
@@ -79,7 +84,7 @@ function renderMenu() {
         </select>
       </label>
       <button class="bigbtn" id="mStart">CONNECT</button>
-      <span class="dimtxt">Wind, runway config, ATIS, time of day and traffic events are rolled when you connect.</span>
+      <span class="dimtxt">Check the SOP button after connecting: it tells you exactly what to issue at your position.</span>
     </div>`;
   el.querySelectorAll(".faccard").forEach(c => c.onclick = () => { selFac = +c.dataset.f; renderMenu(); });
   el.querySelectorAll(".poscard").forEach(c => c.onclick = () => {
@@ -107,7 +112,7 @@ function renderTabs() {
   }).join("");
   el.querySelectorAll(".ftab").forEach(t => {
     t.onclick = () => { activeTab = t.dataset.t; renderTabs(); renderLog(); };
-    t.oncontextmenu = e => {                     // right-click = toggle monitor (listen in)
+    t.oncontextmenu = e => {                     // right-click toggles listening in
       e.preventDefault();
       const p = t.dataset.t;
       if (p === G.playerPos || p === "INT") return;
@@ -142,7 +147,7 @@ function renderStrips() {
   const order = [G.playerPos, ...POSITIONS.filter(p => p !== G.playerPos)];
   for (const pos of order) {
     const list = G.aircraft.filter(a => a.owner === pos && !a.remove && a.state !== "out");
-    html += `<h3><span${pos === G.playerPos ? ' class="me"' : ""}>${pos === G.playerPos ? "▶ " : ""}${pos} — ${POS_NAME[pos].toUpperCase()}</span><span>${list.length}</span></h3>`;
+    html += `<h3><span${pos === G.playerPos ? ' class="me"' : ""}>${pos === G.playerPos ? "▶ " : ""}${pos} · ${POS_NAME[pos].toUpperCase()}</span><span>${list.length}</span></h3>`;
     for (const ac of list) {
       const sel = G.selected === ac ? " sel" : "";
       if (pos === G.playerPos) {
@@ -196,8 +201,7 @@ function renderHeader() {
   document.getElementById("scPts").textContent = career.pts;
   if (G.running) {
     document.getElementById("facinfo").textContent =
-      `${G.fac.icao} ${G.cfg.name} · ${ctrlCallsign(G.playerPos)} ${G.fac.freqs[G.playerPos]} · ARR ${G.arrRwy.id} DEP ${G.depRwy.id}`;
-    document.getElementById("btnAtis").textContent = "ATIS " + G.atis.letter[0];
+      `${G.fac.icao} ${G.cfg.name} · ${ctrlCallsign(G.playerPos)} ${G.fac.freqs[G.playerPos]} · ARR ${G.arrRwy.id} DEP ${G.depRwy.id} · INFO ${G.atis.letter[0]}`;
     document.getElementById("txlabel").textContent = `${G.fac.freqs[G.playerPos]} TX>`;
   }
 }
@@ -213,6 +217,60 @@ G.hooks.log = (chan, who, cls, text) => {
 G.hooks.strips = () => renderStrips();
 G.hooks.score = () => { syncCareer(); renderHeader(); };
 
+/* ---------------- SOPs ---------------- */
+function sopHtml() {
+  const F = G.fac, cfg = G.cfg;
+  const posRows = {
+    DEL: `<tr><td>Clearance format</td><td>"[callsign], cleared to [destination] airport, [SID] departure then as filed,
+      climb and maintain <b>${F.initAlt}</b>, departure frequency <b>${F.freqs.APP}</b>, squawk [code on the strip]."</td></tr>
+      <tr><td>Verify readback</td><td>Pilots misread a squawk or altitude about 1 in 4 times. Catch it with
+      <code>readback incorrect</code> or by restating the item; confirm good ones with <code>readback correct</code>.</td></tr>
+      <tr><td>Then</td><td>The strip pushes to Ground automatically when the pilot is told the readback is correct.</td></tr>`,
+    GND: `<tr><td>Pushback</td><td><code>pushback approved</code> when they call from the gate.</td></tr>
+      <tr><td>Taxi</td><td><code>taxi</code> sends departures to runway <b>${G.depRwy.id}</b> via ${F.taxi[G.depRwy.id] ? F.taxi[G.depRwy.id].names : ""},
+      hold short. Arrivals: <code>taxi</code> sends them to the gate.</td></tr>
+      <tr><td>Handoff</td><td><code>contact tower</code> (or <code>ct</code>) once they report holding short.</td></tr>`,
+    TWR: `<tr><td>Departures</td><td><code>line up and wait</code> / <code>cleared for takeoff</code> on runway <b>${G.depRwy.id}</b>.
+      Ship to departure (<code>contact departure</code>) passing about 700 ft.</td></tr>
+      <tr><td>Arrivals</td><td><code>cleared to land</code> runway <b>${G.arrRwy.id}</b>; they go around at 1 nm without it.
+      After rollout: <code>contact ground</code>.</td></tr>
+      <tr><td>Runway protection</td><td>${G.arrRwy.id === G.depRwy.id
+        ? "Single-runway ops: one aircraft on the runway at a time, no takeoff clearance with an arrival inside about 6 nm."
+        : `Independent parallel ops: ${G.arrRwy.id} landings, ${G.depRwy.id} departures.`}</td></tr>`,
+    APP: `<tr><td>Arrivals</td><td>Descend to 3,000 to 4,000, vector to intercept the runway <b>${G.arrRwy.id}</b> localizer
+      at 30 degrees or less, at or below 3,000 by 10 nm final, then <code>cleared ILS</code>.
+      Established and inside 6 nm: <code>contact tower</code>.</td></tr>
+      <tr><td>Departures</td><td>Climb them (initial ${F.initAlt}, then higher), <code>direct [exit fix]</code>,
+      and <code>contact center</code> above 4,000 and 12 nm out.</td></tr>
+      <tr><td>Separation</td><td>3 nm or 1,000 ft; 2.5 nm allowed when both are established on final.</td></tr>`,
+    CTR: `<tr><td>Arrivals</td><td><code>descend via</code> the STAR (brings them to 11,000), then
+      <code>contact approach</code> by 38 nm from the field.</td></tr>
+      <tr><td>Departures</td><td>Climb to FL230 (<code>c 230</code>), <code>direct [exit]</code>, and
+      <code>contact center</code> to hand them to ${F.nextCenter} beyond about 50 nm.</td></tr>`,
+  };
+  return `
+    <button class="close" onclick="document.getElementById('sop').classList.remove('open')">CLOSE</button>
+    <h2>${F.icao} STANDARD OPERATING PROCEDURES</h2>
+    <p><b>${F.apName}</b> · ${F.artcc} ${F.artccName} · TRACON: ${F.tracon}</p>
+    <h4>CURRENT CONFIGURATION · ${cfg.name.toUpperCase()} · INFORMATION ${G.atis.letter.toUpperCase()}</h4>
+    <table>
+      <tr><td>Runways</td><td>Landing <b>${G.arrRwy.id}</b> · Departing <b>${G.depRwy.id}</b></td></tr>
+      <tr><td>Weather</td><td>Wind ${String(G.atis.windDir).padStart(3, "0")}/${String(G.atis.windSpd).padStart(2, "0")},
+        altimeter ${(+G.atis.qnh / 100).toFixed(2)}, ${G.atis.sky}</td></tr>
+      <tr><td>Initial altitude</td><td><b>${F.initAlt} ft</b> for all departures</td></tr>
+      <tr><td>Departure frequency</td><td><b>${F.freqs.APP}</b> (${F.tracon})</td></tr>
+      <tr><td>Frequencies</td><td>DEL ${F.freqs.DEL} · GND ${F.freqs.GND} · TWR ${F.freqs.TWR} · APP ${F.freqs.APP} · CTR ${F.freqs.CTR}</td></tr>
+    </table>
+    <h4>DEPARTURE PROCEDURES (SIDs) IN USE</h4>
+    <table>${F.sids.map(s => `<tr><td>${s.name}</td><td>exit gates: ${s.exits.join(", ")}</td></tr>`).join("")}</table>
+    <h4>ARRIVALS (STARs)</h4>
+    <p class="dimtxt">${F.stars.join(" · ")} via entry fixes ${F.entryFixes.join(", ")}. Arrivals check on descending via the STAR.</p>
+    <h4>YOUR POSITION · ${ctrlCallsign(G.playerPos)} (${POS_NAME[G.playerPos].toUpperCase()})</h4>
+    <table>${posRows[G.playerPos]}</table>
+    <p class="dimtxt">Every value above is live for this session. The strip shows each aircraft's filed SID, exit fix,
+    destination and assigned squawk; the clearance you issue must match the strip.</p>`;
+}
+
 /* ---------------- session boot ---------------- */
 function beginSession(facIdx, pos, density) {
   lastSynced = 0;
@@ -220,16 +278,18 @@ function beginSession(facIdx, pos, density) {
   activeTab = pos;
   setView(pos === "DEL" || pos === "GND" ? "ASDX" : pos === "TWR" ? "CAB" : "STARS");
   V.range = pos === "CTR" ? 60 : 45;
+  V.pan = { x: 0, y: 0 }; V.asdxPan = { x: 0, y: 0 }; V.cabPan = { x: 0, y: 0 };
   renderTabs(); renderLog(); renderStrips(); renderIntercom(); renderHeader();
   const ph = {
-    DEL: "DAL123 cleared to Boston, DEEZZ5 departure then as filed, climb and maintain 5000, departure 127.4, squawk 2345   ·   then: readback correct",
-    GND: "DAL123 pushback approved  ·  taxi  ·  hold position  ·  contact tower",
-    TWR: "DAL123 line up and wait  ·  cleared for takeoff  ·  cleared to land  ·  contact departure / ground",
-    APP: "DAL123 t l 270 d 40 s 210  ·  cleared ILS  ·  contact tower / center",
-    CTR: "DAL123 descend via  ·  d 110  ·  direct LENDY  ·  contact approach",
+    DEL: "DAL123 cleared to Boston, DEEZZ5 departure then as filed, climb and maintain 5000, departure 127.4, squawk 2345 · then: readback correct",
+    GND: "DAL123 pushback approved · taxi · hold position · contact tower",
+    TWR: "DAL123 line up and wait · cleared for takeoff · cleared to land · contact departure / ground",
+    APP: "DAL123 t l 270 d 40 s 210 · cleared ILS · contact tower / center",
+    CTR: "DAL123 descend via · d 110 · direct LENDY · contact approach",
   }[pos];
   document.getElementById("cmd").placeholder = ph;
-  setTimeout(() => { if (G.running) TTS.say(atisText(), ATIS_VOICE); }, 2500);
+  sysLog("Read the SOP (top right) for this session's runways, initial altitude, departure frequency and SIDs.");
+  sysLog("Voice: press and HOLD the PTT button (or hold Tab) while you speak, release to transmit. Chrome or Edge, allow the microphone. Typing works too.");
 }
 
 function endSession() {
@@ -250,7 +310,7 @@ document.addEventListener("keydown", e => {
   if (e.target === cmdEl || !G.running) return;
   if (document.getElementById("menu").classList.contains("open")) return;
   if (e.key === "p" || e.key === "P") togglePause();
-  else if (e.key.length === 1 && /[a-z0-9]/i.test(e.key) && !e.ctrlKey && !e.metaKey && V.mode !== "CAB") cmdEl.focus();
+  else if (e.key.length === 1 && /[a-z0-9]/i.test(e.key) && !e.ctrlKey && !e.metaKey) cmdEl.focus();
 });
 function togglePause() {
   G.paused = !G.paused;
@@ -276,6 +336,11 @@ document.getElementById("btnAtis").onclick = () => {
   xmit(G.playerPos, "ATIS", "sys", atisText(), null);
   TTS.say(atisText(), ATIS_VOICE);
 };
+document.getElementById("btnSop").onclick = () => {
+  if (!G.running) return;
+  document.getElementById("sopcard").innerHTML = sopHtml();
+  document.getElementById("sop").classList.add("open");
+};
 document.getElementById("btnMenu").onclick = endSession;
 document.querySelectorAll("#viewtabs button").forEach(b => b.onclick = () => setView(b.dataset.v));
 
@@ -285,45 +350,52 @@ document.getElementById("btnHelp").onclick = () => {
   document.getElementById("helpcard").innerHTML = `
     <button class="close" onclick="document.getElementById('help').classList.remove('open')">CLOSE</button>
     <h2>WORKING THE POSITIONS</h2>
-    <p class="dimtxt">Address aircraft by callsign (typed or spoken — hold <code>PTT</code>/<b>Tab</b>). Click a target or strip to
-    select it and you can drop the callsign. Chain instructions freely. Right-click a frequency tab to listen in on an AI position.
-    Strips flow DEL → GND → TWR → APP → CTR (and back down for arrivals).</p>
+    <p class="dimtxt">Address aircraft by callsign, typed or spoken. For voice: press and HOLD the PTT button
+    (or hold Tab) while you talk, release to transmit; use Chrome or Edge and allow the microphone.
+    Click a target, its datablock, or a strip to select it and you can drop the callsign.
+    Pilots also understand plain talk: <code>standby</code>, <code>say again</code>, <code>roger</code>.
+    Chain instructions freely. Right-click a frequency tab to listen in on an AI position's frequency.
+    Strips flow DEL to GND to TWR to APP to CTR and back down for arrivals. The SOP button lists this
+    session's runways, initial altitude, departure frequency and SIDs: everything you need to issue
+    correct clearances.</p>
     <h4>CLEARANCE DELIVERY (S1)</h4>
     <table>
-      <tr><td>full IFR clearance</td><td>"DAL123 cleared to Boston, DEEZZ5 departure then as filed, climb and maintain ${altWords ? "" : ""}${(F.initAlt / 1000)}000, departure ${F.freqs.APP}, squawk 2345" — the strip shows the filed route &amp; squawk</td></tr>
-      <tr><td>readback correct / rbc</td><td>Bless the pilot's readback — <b>listen for wrong squawks/altitudes</b>, ~1 in 4 pilots busts one</td></tr>
-      <tr><td>readback incorrect</td><td>…or restate the item ("squawk 2345") to correct them</td></tr>
+      <tr><td>full IFR clearance</td><td>"DAL123 cleared to Boston, DEEZZ5 departure then as filed, climb and maintain 5000,
+        departure ${F.freqs.APP}, squawk 2345". The strip shows the filed SID, destination and squawk.</td></tr>
+      <tr><td>readback correct / rbc</td><td>Bless the readback. Listen closely: about 1 in 4 pilots busts a squawk or altitude.</td></tr>
+      <tr><td>readback incorrect</td><td>Or restate the item ("squawk 2345") to correct them.</td></tr>
     </table>
     <h4>GROUND (S1)</h4>
     <table>
       <tr><td>pushback approved / pa</td><td>Approve push from the gate</td></tr>
-      <tr><td>taxi / tx</td><td>Taxi to the departure runway via the session's route (or the gate, for arrivals)</td></tr>
+      <tr><td>taxi / tx</td><td>Taxi to the departure runway, or to the gate for arrivals</td></tr>
       <tr><td>hold position / continue</td><td>Stop and restart a taxiing aircraft</td></tr>
       <tr><td>contact tower / ct</td><td>Ship a hold-short departure to tower</td></tr>
     </table>
     <h4>TOWER (S2)</h4>
     <table>
       <tr><td>line up and wait / luaw</td><td>Onto the runway</td></tr>
-      <tr><td>cleared for takeoff / cto</td><td>Roll a departure — mind the final!</td></tr>
+      <tr><td>cleared for takeoff / cto</td><td>Roll a departure. Mind the final!</td></tr>
       <tr><td>cleared to land / ctl</td><td>Arrivals go around at 1 nm if you forget</td></tr>
-      <tr><td>contact departure / cd · contact ground / cg</td><td>Ship climbing departures / rollout arrivals</td></tr>
+      <tr><td>contact departure / cd · contact ground / cg</td><td>Ship climbing departures and rollout arrivals</td></tr>
       <tr><td>go around / ga</td><td>Break off an approach</td></tr>
     </table>
     <h4>APPROACH / DEPARTURE (S3)</h4>
     <table>
-      <tr><td>turn left heading 270 / t l 270</td><td>Vectors; <code>d 40</code>=descend 4,000 · <code>c 80</code>=climb 8,000 · <code>s 210</code>=speed</td></tr>
-      <tr><td>cleared ILS / ils</td><td>≤30° intercept, at/below 3,000 by ~10 nm final or they'll refuse/go around</td></tr>
-      <tr><td>contact tower / ct · contact center / cc</td><td>Handoffs (2.5 nm in-trail legal on final, otherwise 3 nm / 1,000 ft)</td></tr>
+      <tr><td>turn left heading 270 / t l 270</td><td>Vectors. <code>d 40</code> descend 4,000 · <code>c 80</code> climb 8,000 · <code>s 210</code> speed</td></tr>
+      <tr><td>cleared ILS / ils</td><td>Intercept at 30 degrees or less, at or below 3,000 by 10 nm final, or they refuse or go around</td></tr>
+      <tr><td>contact tower / ct · contact center / cc</td><td>Handoffs. 2.5 nm in-trail is legal on final, otherwise 3 nm / 1,000 ft</td></tr>
     </table>
     <h4>CENTER (C1)</h4>
     <table>
       <tr><td>descend via / dvs</td><td>Arrivals descend via their STAR</td></tr>
-      <tr><td>d 110 · direct FIX · contact approach / cap</td><td>Feed arrivals to the TRACON by ~38 nm</td></tr>
+      <tr><td>d 110 · direct FIX · contact approach / cap</td><td>Feed arrivals to the TRACON by about 38 nm</td></tr>
       <tr><td>c 230 · contact center / cc</td><td>Climb departures and ship them to the next center</td></tr>
     </table>
-    <p class="dimtxt">Ratings: S1 → S2 (20 pts) → S3 (50 pts) → C1 (90 pts), earned by working traffic correctly — modeled on
-    <a href="https://vatsim.net/docs/basics/becoming-a-controller/" target="_blank" style="color:var(--cyan)">VATSIM's controller ratings</a>.
-    <b>P</b> pauses · <b>1×/2×/4×</b> sim rate · Landlines call the AI positions · MEDEVAC flights deserve priority.</p>`;
+    <p class="dimtxt">Displays are modeled on CRC's: STARS terminal radar, ASDE-X surface radar, and the top-down
+    Tower Cab. Wheel zooms, dragging pans, double-click recenters. Ratings: S1, then S2 at 20 pts, S3 at 50, C1 at 90,
+    per <a href="https://vatsim.net/docs/basics/becoming-a-controller/" target="_blank" style="color:var(--cyan)">VATSIM's rating ladder</a>.
+    <b>P</b> pauses · 1×/2×/4× sim rate · landlines call the AI positions · MEDEVAC flights deserve priority.</p>`;
   document.getElementById("help").classList.add("open");
 };
 

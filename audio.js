@@ -1,5 +1,5 @@
 /* =====================================================================
-   ZEAL ATC — audio: pilot/controller voices, radio effects, PTT input
+   AI ATC: audio: pilot/controller voices, radio effects, PTT input
    Browser speechSynthesis can't be routed through WebAudio, so the
    radio feel comes from squelch clicks + static bursts wrapped around
    each transmission, with per-speaker voice/rate/pitch variation.
@@ -15,7 +15,7 @@ function audioCtxGet() {
   return AC_ctx;
 }
 
-/* short white-noise burst — the radio squelch */
+/* short white-noise burst, the radio squelch */
 function squelch(vol = 0.05, dur = 0.07) {
   const ctx = audioCtxGet();
   if (!ctx) return;
