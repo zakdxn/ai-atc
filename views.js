@@ -69,7 +69,7 @@ function metarLine() {
   const a = G.atis, F = G.fac;
   const skyCode = { "sky clear": "SKC", "few clouds at two five zero zero": "FEW025",
     "scattered four thousand": "SCT040", "broken eight thousand": "BKN080" }[a.sky] || "SKC";
-  const visCode = { "one zero": "10SM", "seven": "7SM", "five": "5SM" }[a.vis] || "10SM";
+  const visCode = (a.visSM || 10) + "SM";
   return `${F.icao} ${String(15).padStart(2, "0")}${clockHM()}Z ${String(a.windDir).padStart(3, "0")}${String(a.windSpd).padStart(2, "0")}KT ${visCode} ${skyCode} ${a.temp}/${a.dew} A${a.qnh}`;
 }
 
@@ -267,7 +267,7 @@ function drawASDX() {
       ctx.strokeStyle = "#ffffff";
       ctx.strokeRect(x - 9, y - 9, 18, 18);
     }
-    if (!DCB.dbOn) continue;
+    if (!DCB.dbOn || ac.dbHidden) continue;
     /* when an alert is up, unaffected traffic drops to a partial block */
     const anyAlert = DCB.alerts.length > 0;
     const trait = anyAlert && !alerted ? "partial" : dbTraitFor(ac);
@@ -275,19 +275,24 @@ function drawASDX() {
     ctx.fillStyle = G.selected === ac ? "#ffd75e" : alerted ? "#ff6060"
                   : parked ? "#1f9a4a" : ASDX_GRN;
     ctx.strokeStyle = ASDX_GRN; ctx.globalAlpha = 0.5;
-    ctx.beginPath(); ctx.moveTo(x + 4, y - 4); ctx.lineTo(x + 14, y - 12); ctx.stroke();
+    { const o = ac.dbOff || { dx: 16, dy: -14 };
+      ctx.beginPath(); ctx.moveTo(x + Math.sign(o.dx) * 4, y + Math.sign(o.dy) * 4);
+      ctx.lineTo(x + o.dx - 2, y + o.dy + 2); ctx.stroke(); }
     ctx.globalAlpha = 1;
-    ctx.fillText(ac.cs, x + 16, y - 14);
+    const off = ac.dbOff || { dx: 16, dy: -14 };
+    ctx.fillText(ac.cs, x + off.dx, y + off.dy);
+    ac.dbBox = { x: x + off.dx - 3, y: y + off.dy - 11, w: 74, h: trait === "partial" ? 14 : 26 };
     if (trait !== "partial") {
       const l2 = ac.alt > 40
         ? (DCB.dbAlt ? String(Math.round(ac.alt / 100) * 100) : ac.type)
         : parked ? `${ac.type} ${ac.role === "dep" ? "gate " + ac.gate : "gate"}`
         : `${ac.type} ${ac.role === "dep" ? ac.exitFix.name : G.arrRwy.id}`;
-      ctx.fillText(l2, x + 16, y - 2);
+      ctx.fillText(l2, x + off.dx, y + off.dy + 12);
     }
     ctx.font = mono(11);
   }
 
+  drawInsetWindows();
   drawDCBOverlays(W2S);
   drawDCBBar();
   ctx.font = mono(12);
@@ -483,6 +488,28 @@ function drawCAB() {
     ctx.fillText(ac.cs + tag, x + 12, y - 8);
   }
 
+  /* visibility ring: beyond reported visibility the field fades into haze */
+  {
+    const visNm = (G.atis.visSM || 10) * 0.869;      // statute miles to nm
+    const rPx = visNm * scale;
+    const [ox, oy] = W2S(G.fac.towerPos);
+    if (rPx < Math.hypot(V.w, V.h)) {
+      const haze = night ? "rgba(150,160,175," : "rgba(228,232,238,";
+      const grd = ctx.createRadialGradient(ox, oy, rPx * 0.72, ox, oy, rPx * 1.5);
+      grd.addColorStop(0, haze + "0)");
+      grd.addColorStop(0.45, haze + "0.55)");
+      grd.addColorStop(1, haze + "0.96)");
+      ctx.fillStyle = grd;
+      ctx.fillRect(0, 0, V.w, V.h);
+      ctx.strokeStyle = night ? "rgba(200,210,225,.5)" : "rgba(255,255,255,.75)";
+      ctx.setLineDash([5, 6]);
+      ctx.beginPath(); ctx.arc(ox, oy, rPx, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = night ? "#9fb6c2" : "#405a68";
+      ctx.fillText(`${G.atis.visSM}SM VIS`, ox + rPx * 0.7, oy - rPx * 0.7);
+    }
+  }
+
   /* METAR bar, CRC cab style */
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, V.w, 24);
@@ -532,6 +559,19 @@ function hitTest(mx, my) {
 canvas.addEventListener("contextmenu", e => e.preventDefault());
 canvas.addEventListener("mousedown", e => {
   if (e.button === 1) e.preventDefault();
+  if (e.button === 0 && V.mode === "ASDX" && G.running) {
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const ac = dbHit(mx, my);
+    if (ac) {                                   // grab the datablock, not the map
+      const [ax, ay] = [V.cx + (ac.x - V.asdxPan.x) * curScale(),
+                        V.cy - (ac.y - V.asdxPan.y) * curScale()];
+      V.dbDrag = { ac, gx: mx - (ax + (ac.dbOff || { dx: 16 }).dx),
+                        gy: my - (ay + (ac.dbOff || { dy: -14 }).dy) };
+      V.dragging = false;
+      return;
+    }
+  }
   V.dragging = e.button === 0;
   V.dragX = e.clientX; V.dragY = e.clientY; V.dragMoved = 0;
   if (e.button === 1 && G.running) {           // middle click finishes a shape
@@ -541,6 +581,15 @@ canvas.addEventListener("mousedown", e => {
   }
 });
 canvas.addEventListener("mousemove", e => {
+  if (V.dbDrag) {
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const ac = V.dbDrag.ac;
+    const ax = V.cx + (ac.x - V.asdxPan.x) * curScale();
+    const ay = V.cy - (ac.y - V.asdxPan.y) * curScale();
+    ac.dbOff = { dx: mx - V.dbDrag.gx - ax, dy: my - V.dbDrag.gy - ay };
+    return;
+  }
   if (!V.dragging) return;
   const dx = e.clientX - V.dragX, dy = e.clientY - V.dragY;
   V.dragX = e.clientX; V.dragY = e.clientY;
@@ -553,6 +602,7 @@ function screenToWorld(mx, my) {
   return { x: (mx - V.cx) / s + p.x, y: -(my - V.cy) / s + p.y };
 }
 window.addEventListener("mouseup", e => {
+  if (V.dbDrag) { V.dbDrag = null; return; }
   if (!V.dragging) return;
   V.dragging = false;
   if (V.dragMoved > 5 || !G.running) return;
@@ -563,12 +613,21 @@ window.addEventListener("mouseup", e => {
   const hit = hitTest(mx, my);
   if (hit) {
     if (e.ctrlKey) { openFlightPlan(hit); return; }         // ctrl+click opens the flight plan
+    if (e.shiftKey && V.mode !== "STARS") {                 // shift+click hides the datablock
+      hit.dbHidden = !hit.dbHidden;
+      return;
+    }
     G.selected = hit; G.hooks.strips();
   }
 });
 canvas.addEventListener("wheel", e => {
   e.preventDefault();
   const dir = Math.sign(e.deltaY);
+  {
+    const rect = canvas.getBoundingClientRect();
+    if (typeof dcbWheel === "function" &&
+        dcbWheel(e.clientX - rect.left, e.clientY - rect.top, dir)) return;
+  }
   if (V.mode === "STARS") V.range = clamp(V.range + dir * 5, 15, 80);
   else if (V.mode === "ASDX") V.asdxRange = clamp(V.asdxRange * (dir > 0 ? 1.2 : 0.84), 0.6, 4.5);
   else V.cabRange = clamp(V.cabRange * (dir > 0 ? 1.2 : 0.84), 0.5, 4);
@@ -619,4 +678,70 @@ function drawTaxiLabels(W2S, scale, TH) {
     }
   }
   ctx.font = mono(11);
+}
+
+/* ---------- secondary ASDE-X windows (TOOLS > NEW WINDOW) ----------
+   Each is an independent viewport onto the same surface picture, so you
+   can keep a zoomed view of a runway end while working the whole field. */
+function drawInsetWindows() {
+  if (!DCB.windows || !DCB.windows.length) return;
+  const N = DCB.night;
+  const bt = DCB.brite;
+  const sh = (hex, f) => {
+    const n = parseInt(hex.slice(1), 16);
+    const c = [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+      .map(x => Math.max(0, Math.min(255, Math.round(x * f))));
+    return `rgb(${c[0]},${c[1]},${c[2]})`;
+  };
+  const TH = {
+    taxi: sh(N ? "#2b2f34" : ASDX_PVMT, bt), taxiLine: null,
+    rwy: "#000", rwyLine: null,
+    ramp: sh(N ? "#6a6b70" : "#8f9096", bt), bldg: sh(ASDX_BLDG, bt),
+    label: sh("#c8ccd2", bt), twLabel: sh("#e8c95a", bt), holdBar: "#c8a020",
+  };
+  for (const win of DCB.windows) {
+    const cx = win.x + win.w / 2, cy = win.y + win.h / 2;
+    const scale = (Math.min(win.w, win.h) / 2 - 6) / win.range;
+    const W2S = p => [cx + (p.x - win.pan.x) * scale, cy - (p.y - win.pan.y) * scale];
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(win.x, win.y, win.w, win.h);
+    ctx.clip();
+    ctx.fillStyle = N ? "#06232a" : ASDX_BG;
+    ctx.fillRect(win.x, win.y, win.w, win.h);
+    drawPavement(W2S, scale, TH);
+    for (const ac of G.aircraft) {
+      if (ac.alt > 2000) continue;
+      const [x, y] = W2S(ac);
+      if (x < win.x - 30 || x > win.x + win.w + 30 || y < win.y - 30 || y > win.y + win.h + 30) continue;
+      const parked = ["gate", "clxOk", "gndCall", "gateIn"].includes(ac.state);
+      drawPlaneIcon(x, y, ac.hdg, parked ? "#9aa4ad" : "#ffffff", G.selected === ac);
+      if (DCB.dbOn && !ac.dbHidden) {
+        ctx.font = mono(Math.max(9, DCB.charSize - 1));
+        ctx.fillStyle = G.selected === ac ? "#ffd75e" : ASDX_GRN;
+        ctx.fillText(ac.cs, x + 10, y - 8);
+        ctx.font = mono(11);
+      }
+    }
+    ctx.restore();
+    ctx.strokeStyle = "#7fa8c0";
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(win.x, win.y, win.w, win.h);
+    ctx.lineWidth = 1;
+    ctx.fillStyle = "#7fa8c0";
+    ctx.font = mono(9);
+    ctx.fillText(`WIN ${win.range.toFixed(1)}nm`, win.x + 5, win.y + 11);
+    ctx.font = mono(11);
+  }
+}
+
+/* ---------- datablock dragging ---------- */
+function dbHit(mx, my) {
+  if (!DCB.dbOn) return null;
+  for (const ac of G.aircraft) {
+    const b = ac.dbBox;
+    if (!b || ac.dbHidden) continue;
+    if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) return ac;
+  }
+  return null;
 }

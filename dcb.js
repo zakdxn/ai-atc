@@ -40,6 +40,8 @@ const DCB = {
   closedRwys: new Set(),
   inhibited: new Set(),     // aircraft ids exempt from safety logic
   temp: [],                 // {kind:'closed'|'restricted'|'text', pts|p, text}
+  windows: [],              // secondary viewports {x,y,w,h,range,pan}
+  winDraft: null,
   dbAreas: [],              // {pts, trait}
   alertPos: null,           // world point for the alert box
   alerts: [],               // {t, text, acId}
@@ -156,6 +158,8 @@ function dcbSub(id) {
       { id: "DONE", label: "DONE" },
     ];
     case "TOOLS": return [
+      { id: "O_NEWWIN", label: "NEW\nWINDOW" },
+      { id: "O_DELWIN", label: "DELETE\nWINDOW" },
       { id: "O_HIST", label: `HISTORY\n${DCB.historyLen}` },
       { id: "O_BAR", label: `MENU BAR\n${DCB.barTop ? "TOP" : "BOTTOM"}` },
       { id: "DONE", label: "DONE" },
@@ -222,6 +226,8 @@ function dcbAction(id) {
     }
     case "T_DEL": DCB.mode = "del_temp"; break;
     case "T_CLEAR": DCB.temp = []; break;
+    case "O_NEWWIN": DCB.mode = "new_window"; DCB.winDraft = null; break;
+    case "O_DELWIN": DCB.mode = "del_window"; break;
     case "A_DEF": DCB.mode = "draw_dbarea"; DCB.pending = []; break;
     case "A_DEL": DCB.mode = "del_dbarea"; break;
     case "P_SAVE":
@@ -342,6 +348,13 @@ function drawDCBOverlays(W2S) {
     ctx.font = mono(11);
     DCB.alerts.forEach((a, i) => ctx.fillText(a.text.slice(0, 40), p[0] + 8, p[1] + 16 + i * 15));
   }
+  /* window being drawn */
+  if (DCB.winDraft) {
+    ctx.strokeStyle = "#ffa53a";
+    ctx.setLineDash([4, 4]);
+    ctx.strokeRect(DCB.winDraft.x - 1, DCB.winDraft.y - 1, 2, 2);
+    ctx.setLineDash([]);
+  }
   /* mode prompt */
   if (DCB.mode) {
     const msg = {
@@ -353,6 +366,8 @@ function drawDCBOverlays(W2S) {
       del_dbarea: "Left-click a trait area to delete it",
       inhibit: "Left-click an aircraft to inhibit its safety-logic alerts",
       alertpos: "Left-click to reposition the alert area",
+      new_window: "Left-click one corner, then the opposite corner, to place a window",
+      del_window: "Left-click a secondary window to delete it",
     }[DCB.mode] || "";
     ctx.fillStyle = "#ffd75e";
     ctx.font = mono(12);
@@ -376,6 +391,24 @@ function dcbClick(mx, my, world, button) {
   if (bar) { dcbAction(bar); return true; }
   if (!DCB.mode) return false;
 
+  /* secondary windows work in screen space */
+  if (DCB.mode === "new_window") {
+    if (!DCB.winDraft) { DCB.winDraft = { x: mx, y: my }; return true; }
+    const x = Math.min(DCB.winDraft.x, mx), y = Math.min(DCB.winDraft.y, my);
+    const w = Math.abs(mx - DCB.winDraft.x), h = Math.abs(my - DCB.winDraft.y);
+    if (w > 60 && h > 50) {
+      DCB.windows.push({ x, y, w, h, range: 0.45,
+        pan: { x: world.x, y: world.y } });
+    }
+    DCB.winDraft = null; DCB.mode = null;
+    return true;
+  }
+  if (DCB.mode === "del_window") {
+    const i = DCB.windows.findIndex(q => mx >= q.x && mx <= q.x + q.w && my >= q.y && my <= q.y + q.h);
+    if (i >= 0) DCB.windows.splice(i, 1);
+    DCB.mode = null;
+    return true;
+  }
   if (button === 1) {                     // middle click completes a shape
     if (DCB.pending.length >= 3) {
       if (DCB.mode === "draw_closed") DCB.temp.push({ kind: "closed", pts: DCB.pending });
@@ -444,4 +477,14 @@ function pointInPolyPts(pts, p) {
         p.x < ((pts[j].x - pts[i].x) * (p.y - pts[i].y)) / (pts[j].y - pts[i].y) + pts[i].x) inside = !inside;
   }
   return inside;
+}
+
+
+/* scroll wheel over a secondary window zooms that window instead of the main view */
+function dcbWheel(mx, my, dir) {
+  if (V.mode !== "ASDX") return false;
+  const w = (DCB.windows || []).find(q => mx >= q.x && mx <= q.x + q.w && my >= q.y && my <= q.y + q.h);
+  if (!w) return false;
+  w.range = Math.max(0.12, Math.min(3, w.range * (dir > 0 ? 1.2 : 0.84)));
+  return true;
 }

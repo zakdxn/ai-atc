@@ -1619,10 +1619,12 @@ function genAtis(fac, cfg) {
   return {
     letter, windDir, windSpd, qnh, tod, temp, dew: temp - Math.floor(rnd(2, 13)),
     vis: pick(["one zero", "one zero", "seven", "five"]),
+    visSM: 10,
     sky: pick(["sky clear", "few clouds at two five zero zero", "scattered four thousand", "broken eight thousand"]),
     text: null,
   };
 }
+const VIS_SM = { "one zero": 10, "seven": 7, "five": 5, "three": 3, "one": 1 };
 function atisText() {
   const a = G.atis, F = G.fac;
   return `${F.apName.split(" ")[0]} ${F.icao} information ${a.letter}. Wind ${hdgWords(a.windDir)} at ${numWords(a.windSpd)}. Visibility ${a.vis}. ${a.sky}. Altimeter ${numWords(a.qnh)}. Landing runway ${rwyWords(G.arrRwy.id)}, departing runway ${rwyWords(G.depRwy.id)}. Advise on initial contact you have information ${a.letter}.`;
@@ -1640,6 +1642,12 @@ function startSession(facIdx, playerPos, density) {
   G.depRwy = resolveRwy(cfg.dep);
   if (typeof prepareRoutes === "function") prepareRoutes(F, G.arrRwy.id, G.depRwy.id);
   G.atis = genAtis(F, cfg);
+  G.atis.visSM = VIS_SM[G.atis.vis] || 10;
+  if (Math.random() < 0.18) {                       // occasional low-visibility day
+    G.atis.vis = pick(["three", "one"]);
+    G.atis.visSM = VIS_SM[G.atis.vis];
+    G.atis.sky = "overcast six hundred";
+  }
   G.t = 0; G.score = 0; G.points = 0;
   G.aircraft = []; G.arrSeq = [];
   G.channels = {}; G.conflicts = new Set(); G.proxPairs = new Set();
