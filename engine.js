@@ -1044,7 +1044,8 @@ function flightStep(ac, dt) {
 
   /* edge of the world */
   const dOut = ac.distField();
-  if (dOut > 62 && ac.state !== "out") {
+  // Expanded from 62 to 75 to account for the new 70-mile staggered spawn radius
+  if (dOut > 75 && ac.state !== "out") {
     ac.remove = true;
     if (ac.owner === G.playerPos) addPoints(-10, `${ac.cs} left the airspace unserviced`);
     else xmit(G.playerPos, "SYS", "warn", `${ac.cs} left the airspace.`, null);
