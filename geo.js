@@ -355,4 +355,38 @@ function pointInPoly(flat, p) {
   return inside;
 }
 
+function gateSpots(fac, want) {
+  if (fac.gateSpots && fac.gateSpots.length >= want) return fac.gateSpots;
+  const spots = [];
+  const src = (fac.pav && fac.pav.apr && fac.pav.apr.length) ? fac.pav.apr
+            : (fac.pav && fac.pav.twy ? fac.pav.twy.filter(p => polyArea(p) > 0.004) : []);
+  
+  const ranked = src.map(p => ({ p, a: polyArea(p) })).sort((x, y) => y.a - x.a).slice(0, 6);
+  for (const { p } of ranked) {
+    const [x0, y0, x1, y1] = polyBounds(p);
+    for (let tries = 0; tries < 400 && spots.length < want * 3; tries++) {
+      const q = { x: x0 + Math.random() * (x1 - x0), y: y0 + Math.random() * (y1 - y0) };
+      if (!pointInPoly(p, q)) continue;
+      if (spots.some(s => Math.hypot(s.x - q.x, s.y - q.y) < 0.02)) continue;
+      spots.push(q);
+    }
+    if (spots.length >= want * 3) break;
+  }
+  if (!spots.length) {
+    const a = fac.gates.anchor;
+    for (let i = 0; i < want; i++) {
+      spots.push({ x: a.x + (Math.random() - 0.5) * 0.3, y: a.y + (Math.random() - 0.5) * 0.2 });
+    }
+  }
+  fac.gateSpots = spots;
+  return spots;
+}
+
+function pickGateSpot(fac, taken) {
+  const spots = gateSpots(fac, 24);
+  const free = spots.filter(s => !taken.some(t => Math.hypot(t.x - s.x, t.y - s.y) < 0.018));
+  const pool = free.length ? free : spots;
+  return { ...pool[Math.floor(Math.random() * pool.length)] };
+}
+
 if (typeof FACILITIES !== "undefined") FACILITIES.forEach(realizeFacility);
