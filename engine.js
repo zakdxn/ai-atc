@@ -241,8 +241,10 @@ class Aircraft {
       this.cruise = pick([30000, 32000, 34000, 36000, 38000]);
       const brg = bearingTo({ x: 0, y: 0 }, this.entryFix);
       
-      // STAGGER THE ARRIVALS SO THEY DON'T CLUMP
-      const stagger = rnd(58, 70);
+      // DYNAMIC STAGGER: Measure fix distance and spawn 15-30 miles OUTSIDE of it.
+      const fixDist = Math.hypot(this.entryFix.x || 0, this.entryFix.y || 0) || 40;
+      const stagger = Math.max(fixDist + rnd(15, 30), 70); 
+
       this.x = Math.sin(d2r(brg)) * stagger; 
       this.y = Math.cos(d2r(brg)) * stagger;
       
@@ -929,7 +931,7 @@ function stepAircraft(ac, dt) {
     }
     case "out":
       flightStep(ac, dt);
-      if (ac.distField() > 60) ac.remove = true;
+      if (ac.distField() > 150) ac.remove = true;
       return;
     default:
       flightStep(ac, dt);
@@ -976,8 +978,8 @@ function flightStep(ac, dt) {
   if (ac.app === "cleared") {
     const R = ac.rwy || G.arrRwy;
     const g = finalGeom(ac, R);
-    // Increased ILS capture range to 60 miles to ensure far breakouts intercept properly
-    if (g.along > 1 && g.along < 60 && Math.abs(g.cross) < 2.0 &&
+    // Increased ILS capture range to 100 miles to ensure far breakouts intercept properly
+    if (g.along > 1 && g.along < 100 && Math.abs(g.cross) < 2.0 &&
         Math.abs(angDiff(R.hdg, ac.hdg)) < 100) {
       ac.app = "established";
       ac.directFix = null;
@@ -1044,8 +1046,8 @@ function flightStep(ac, dt) {
 
   /* edge of the world */
   const dOut = ac.distField();
-  // Expanded from 62 to 75 to account for the new 70-mile staggered spawn radius
-  if (dOut > 75 && ac.state !== "out") {
+  // MASSIVE out of bounds wall to account for distant dynamically spawned arrivals
+  if (dOut > 150 && ac.state !== "out") {
     ac.remove = true;
     if (ac.owner === G.playerPos) addPoints(-10, `${ac.cs} left the airspace unserviced`);
     else xmit(G.playerPos, "SYS", "warn", `${ac.cs} left the airspace.`, null);
@@ -1205,9 +1207,10 @@ function pairState(ac) {
 /* =====================================================================
    PLAYER COMMAND PARSING
    ===================================================================== */
+// EXPLICIT FIX: Removed "to": "2" and "for": "4" so they don't break "cleared to land" or speed assignments!
 const WORD_NUM = {
-  zero: "0", oh: "0", o: "0", one: "1", won: "1", two: "2", to: "2", too: "2",
-  three: "3", tree: "3", four: "4", for: "4", fore: "4",
+  zero: "0", oh: "0", o: "0", one: "1", won: "1", two: "2", too: "2",
+  three: "3", tree: "3", four: "4", fore: "4",
   five: "5", fife: "5", six: "6", seven: "7", eight: "8", ate: "8",
   nine: "9", niner: "9",
 };
@@ -1232,8 +1235,7 @@ function wordsToNumbers(text) {
   flush();
   return out.join(" ");
 }
-/* Speech recognisers often write squawk digits as words: "squawk to ate
-   for" for 2 8 4. Fix those homophones inside the squawk phrase only. */
+
 const SQK_HOMOPHONE = { to: "2", too: "2", two: "2", tu: "2", for: "4", fore: "4", four: "4",
   ate: "8", eight: "8", won: "1", one: "1", tree: "3", three: "3", fife: "5", five: "5",
   zero: "0", oh: "0", o: "0", six: "6", seven: "7", nine: "9", niner: "9" };
@@ -1250,23 +1252,21 @@ function fixSquawkSpeech(s) {
   });
 }
 
-/* Speech recognisers routinely corrupt standard phraseology:
-   "climbing maintained", "climate maintain", "descending maintain",
-   "turn left heading" losing the "and", and so on. Rewrite the common
-   corruptions back to the phrase the parser expects. */
 const PHRASE_FIX = [
   // Global STT catch-alls
   [/\bate\b/g, "eight"],
   [/\bwon\b/g, "one"],
-  [/\btoo\b/g, "two"],
-  [/\bfore\b/g, "four"],
-  [/\bcurd\b/g, "cleared"],
+  [/\bcurd\s+to\b/g, "cleared to"],
+  [/\bcurd\s+for\b/g, "cleared for"],
   [/\bclared\b/g, "cleared"],
+  [/\bclear\s+to\b/g, "cleared to"],
+  [/\bclear\s+for\b/g, "cleared for"],
   [/\bspare\s+wings\b/g, "spirit wings"],
   [/\bspring\s+wings\b/g, "spirit wings"],
   [/\bspeed\s+bird\b/g, "speedbird"],
   [/\bbrick\s+yard\b/g, "brickyard"],
   [/\b(spirit\s*wings|alaska|delta|american|united|southwest|jetblue|fedex|ups|brickyard|speedbird|citrus|skywest|envoy)\s+for\b/g, "$1 four"],
+  [/\b(spirit\s*wings|alaska|delta|american|united|southwest|jetblue|fedex|ups|brickyard|speedbird|citrus|skywest|envoy)\s+to\b/g, "$1 two"],
 
   // Phraseology standardizers
   [/(?:nine|9|09)\s+(?:or|er|a|are)\b/g, "9"],
@@ -1279,8 +1279,6 @@ const PHRASE_FIX = [
   [/\bclim(?:bing|bin|ate|it|bed)\b/g, "climb"],
   [/\bdescen(?:ding|t|ded)\b/g, "descend"],
   [/\bcleared?\s+to\s+land(?:ing)?\b/g, "cleared to land"],
-  [/\bclear\s+(?:to|for)\b/g, "cleared to"],
-  [/\bcurd\s+(?:to|for)\b/g, "cleared for"],
   [/\bturn(?:ing)?\s+(?:left|lft)\b/g, "turn left"],
   [/\bturn(?:ing)?\s+right\b/g, "turn right"],
   [/\bhead(?:ing|ings)?\b/g, "heading"],
@@ -1322,7 +1320,12 @@ function matchCallsign(s) {
       for (let j = i; j < Math.min(toks.length, i + 5); j++) {
         joined += toks[j];
         if (joined.length > 18) break;
-        if (targets.includes(joined) &&
+        
+        // STT FIX: Inside a callsign, aggressively treat to/for as numbers so "alaskato4" becomes "alaska24". 
+        // This is done safely here so it doesn't accidentally change "cleared to land" into "cleared 2 land"!
+        let nj = joined.replace(/to|too/g, "2").replace(/for|fore/g, "4");
+
+        if ((targets.includes(joined) || targets.includes(nj)) &&
             (i < bestStart || (i === bestStart && joined.length > bestLen))) {
           best = ac; bestStart = i; bestLen = joined.length; bestSpan = [i, j];
         }
@@ -2553,7 +2556,7 @@ function tickEngine(realDt) {
         ac.say(p.text);
       }
       if (ac.remove2 && G.t >= ac.remove2) ac.remove = true;
-      if (ac.state === "out" && ac.distField() > 58) ac.remove = true;
+      if (ac.state === "out" && ac.distField() > 150) ac.remove = true;
     }
     const removed = G.aircraft.filter(a => a.remove);
     if (removed.length) {
