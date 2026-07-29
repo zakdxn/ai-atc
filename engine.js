@@ -65,6 +65,33 @@ const G = {
 };
 
 const AI_SHORT = fac => fac.icao.replace(/^K/, "");
+/* Spoken on frequency. Never the 3-letter code: speech engines read
+   "MIA" as "Missing In Action" and "ORD" as "ord". */
+const SPOKEN_NAME = {
+  KJFK: "Kennedy", KLAX: "Los Angeles", KATL: "Atlanta", KORD: "O'Hare",
+  KMIA: "Miami", KBOS: "Boston", KDEN: "Denver", KDFW: "Dallas",
+  KIAH: "Houston", KIAD: "Dulles", KSEA: "Seattle", KSFO: "San Francisco",
+  KMSP: "Minneapolis", KDTW: "Detroit", KSLC: "Salt Lake", KMEM: "Memphis",
+  KMCI: "Kansas City", KJAX: "Jacksonville", KIND: "Indy", KPHX: "Phoenix",
+  PANC: "Anchorage", PHNL: "Honolulu",
+};
+function facSpoken(fac) {
+  if (SPOKEN_NAME[fac.icao]) return SPOKEN_NAME[fac.icao];
+  return (fac.apName || fac.icao)
+    .replace(/\s+(Intl|International|Airport|Regional|Municipal|Metropolitan|Field).*$/i, "")
+    .split(/[-\/]/)[0].trim();
+}
+/* Departure and Approach are the same TRACON, but most fields publish a
+   separate departure frequency. Derive a stable one per facility. */
+function depFreq(fac) {
+  if (fac._depFreq) return fac._depFreq;
+  const base = parseFloat(fac.freqs.APP);
+  let f = base + 1.15;
+  if (f > 135.9) f = base - 1.35;
+  fac._depFreq = f.toFixed(2);
+  return fac._depFreq;
+}
+
 function ctrlCallsign(pos) {
   const s = AI_SHORT(G.fac);
   return { DEL: s + "_DEL", GND: s + "_GND", TWR: s + "_TWR", APP: s + "_APP", CTR: G.fac.artcc + "_CTR" }[pos];
@@ -214,6 +241,17 @@ function setOwner(ac, pos, silent) {
    Every call is drawn from a pool of phrasings so the frequency never
    sounds canned. */
 const BYE = () => pick(["good day", "so long", "seeya", "have a good one", "later"]);
+/* Is the frequency busy? Pilots wait for a gap instead of stepping on
+   whatever is already being said. */
+function freqBusy(chan) {
+  const ch = G.channels[chan] || [];
+  const last = ch[ch.length - 1];
+  if (!last) return false;
+  const words = last.text.split(/\s+/).length;
+  const airtime = Math.max(2.5, words * 0.42);          // seconds to say it
+  return (G.t - last.t) < airtime;
+}
+
 function pilotCheckIn(ac) {
   ac.called = true;
   const F = G.fac;
@@ -223,7 +261,7 @@ function pilotCheckIn(ac) {
       ac.clxStage = 1;
       ac.say(pick([
         `Clearance, ${ac.spoken()}, gate ${ac.gate.toLowerCase()}, IFR to ${ac.dest.city}, with information ${G.atis.letter}, ready to copy.`,
-        `${AI_SHORT(F)} clearance, ${ac.spoken()} at ${ac.gate.toLowerCase()} with ${G.atis.letter}, IFR ${ac.dest.city}, ready to copy when you are.`,
+        `${facSpoken(F)} clearance, ${ac.spoken()} at ${ac.gate.toLowerCase()} with ${G.atis.letter}, IFR ${ac.dest.city}, ready to copy when you are.`,
         `Clearance delivery, good ${G.atis.tod === "night" ? "evening" : "day"}, ${ac.spoken()}, looking for our clearance to ${ac.dest.city}, we have ${G.atis.letter}.`,
         `Clearance, ${ac.spoken()}, ${ac.dest.city} today, information ${G.atis.letter}, ready to copy.`,
       ]));
@@ -231,7 +269,7 @@ function pilotCheckIn(ac) {
     case "GND":
       if (ac.role === "dep") ac.say(pick([
         `Ground, ${ac.spoken()}, gate ${ac.gate.toLowerCase()} with ${G.atis.letter}, request pushback.`,
-        `${AI_SHORT(F)} ground, ${ac.spoken()}, ready for the push at ${ac.gate.toLowerCase()}.`,
+        `${facSpoken(F)} ground, ${ac.spoken()}, ready for the push at ${ac.gate.toLowerCase()}.`,
         `Ground, ${ac.spoken()}, we'd like to push, gate ${ac.gate.toLowerCase()}.`,
       ]));
       else ac.say(pick([
@@ -244,7 +282,7 @@ function pilotCheckIn(ac) {
       if (ac.role === "dep") ac.say(pick([
         `Tower, ${ac.spoken()}, holding short runway ${rwyWords(G.depRwy.id)}, ready.`,
         `Tower, ${ac.spoken()}, ready to go, ${rwyWords(G.depRwy.id)}.`,
-        `${AI_SHORT(F)} tower, ${ac.spoken()}, short of ${rwyWords(G.depRwy.id)}, ready for departure.`,
+        `${facSpoken(F)} tower, ${ac.spoken()}, short of ${rwyWords(G.depRwy.id)}, ready for departure.`,
       ]));
       else ac.say(pick([
         `Tower, ${ac.spoken()}, ${Math.max(1, Math.round(finalGeom(ac, G.arrRwy).along))} mile final, runway ${rwyWords(G.arrRwy.id)}.`,
@@ -291,11 +329,11 @@ function aiDEL(ac) {
   if (ac.state !== "gate" || !ac.called) return;
   const F = G.fac;
   if (ac.clxStage === 1) {
-    aiSay("DEL", `${ac.spoken()}, cleared to ${ac.dest.city} airport, ${ac.sid.name} departure then as filed, climb and maintain ${altWords(F.initAlt)}, expect ${altWords(ac.cruise)} one zero minutes after departure, departure frequency ${freqWords(F.freqs.APP)}, squawk ${numWords(ac.sqk)}.`);
+    aiSay("DEL", `${ac.spoken()}, cleared to ${ac.dest.city} airport, ${ac.sid.name} departure then as filed, climb and maintain ${altWords(F.initAlt)}, expect ${altWords(ac.cruise)} one zero minutes after departure, departure frequency ${freqWords(depFreq(F))}, squawk ${numWords(ac.sqk)}.`);
     ac.clxStage = 2;
     ac.aiAt = G.t + rnd(4, 8);
   } else if (ac.clxStage === 2) {
-    ac.say(`Cleared to ${ac.dest.city} via the ${ac.sid.name} then as filed, climb and maintain ${altWords(F.initAlt)}, expect ${altWords(ac.cruise)} one zero minutes after departure, departure frequency ${freqWords(F.freqs.APP)}, squawk ${numWords(ac.sqk)}, ${ac.spoken()}.`);
+    ac.say(`Cleared to ${ac.dest.city} via the ${ac.sid.name} then as filed, climb and maintain ${altWords(F.initAlt)}, expect ${altWords(ac.cruise)} one zero minutes after departure, departure frequency ${freqWords(depFreq(F))}, squawk ${numWords(ac.sqk)}, ${ac.spoken()}.`);
     ac.clxStage = 3;
     ac.aiAt = G.t + rnd(2, 4);
   } else if (ac.clxStage === 3) {
@@ -397,7 +435,7 @@ function runwayFreeForTakeoff() {
 function aiTWR(ac) {
   const F = G.fac;
   if (ac.role === "dep") {
-    if (ac.state === "holdShort" && ac.called && runwayFreeForTakeoff() &&
+    if (ac.state === "holdShort" && ac.called && runwayFreeForTakeoff() && !tmuHold(ac) &&
         !(typeof isRwyClosed === "function" && isRwyClosed(G.depRwy.id))) {
       aiSay("TWR", pick([
         `${ac.spoken()}, wind ${hdgWords(G.atis.windDir)} at ${numWords(G.atis.windSpd)}, runway ${rwyWords(G.depRwy.id)}, cleared for takeoff.`,
@@ -436,6 +474,13 @@ function aiTWR(ac) {
 }
 
 function startRoll(ac) {
+  /* everyone still queued shuffles forward */
+  for (const o of G.aircraft) {
+    if (o !== ac && ["holdShortG", "holdShort"].includes(o.state)) {
+      const fwd = { x: Math.sin(d2r(o.hdg)), y: Math.cos(d2r(o.hdg)) };
+      o.x += fwd.x * 0.045; o.y += fwd.y * 0.045;
+    }
+  }
   ac.state = "rolling"; ac.stateT = 0;
   ac.x = G.depRwy.thr.x; ac.y = G.depRwy.thr.y;
   ac.hdg = ac.targetHdg = G.depRwy.hdg;
@@ -452,7 +497,7 @@ function aiAPP(ac) {
     if (ac.state !== "depCtl") return;
     if (!ac.appPlan) {
       ac.appPlan = { stage: 0 };
-      aiSay("APP", `${ac.spoken()}, ${AI_SHORT(F)} departure, radar contact. Climb and maintain ${altWords(Math.min(15000, F.initAlt + 7000))}.`);
+      aiSay("APP", `${ac.spoken()}, ${facSpoken(F)} departure, radar contact. Climb and maintain ${altWords(Math.min(15000, F.initAlt + 7000))}.`);
       ac.say(`Climb and maintain ${altWords(Math.min(15000, F.initAlt + 7000))}, ${ac.spoken()}.`);
       ac.assignedAlt = ac.targetAlt = Math.min(15000, F.initAlt + 7000);
       ac.aiAt = G.t + 15;
@@ -477,7 +522,7 @@ function aiAPP(ac) {
     const straight = g.along > 14 && Math.abs(g.cross) < 11;
     ac.appPlan = { mode: straight ? "str" : "dw", side: g.cross >= 0 ? 1 : -1, stage: 0, ext: 0 };
     G.arrSeq.push(ac.id);
-    aiSay("APP", `${ac.spoken()}, ${AI_SHORT(F)} approach, expect ILS runway ${rwyWords(G.arrRwy.id)}. Descend and maintain ${altWords(straight ? 4000 : 6000)}.`);
+    aiSay("APP", `${ac.spoken()}, ${facSpoken(F)} approach, expect ILS runway ${rwyWords(G.arrRwy.id)}. Descend and maintain ${altWords(straight ? 4000 : 6000)}.`);
     ac.say(`Down to ${altWords(straight ? 4000 : 6000)}, expecting the ILS, ${ac.spoken()}.`);
     ac.assignedAlt = ac.targetAlt = straight ? 4000 : 6000;
     ac.targetIas = 250;
@@ -613,12 +658,13 @@ function stepAircraft(ac, dt) {
   }
   if (!ac.called && G.t >= ac.callAt &&
       !["push", "taxi", "taxiIn", "lineup", "rolling", "landedRoll", "out", "gateIn", "clxOk", "taxiWait", "holdShortG", "rwyExit"].includes(ac.state)) {
-    pilotCheckIn(ac);
+    if (freqBusy(ac.owner)) ac.callAt = G.t + rnd(2, 5);   // wait for a gap
+    else pilotCheckIn(ac);
   }
   /* AI controller action */
   if (isAI(ac.owner) && ac.called && ac.aiAt && G.t >= ac.aiAt) {
-    ac.aiAt = 0;
-    AI_FN[ac.owner](ac);
+    if (freqBusy(ac.owner)) ac.aiAt = G.t + rnd(2, 4);
+    else { ac.aiAt = 0; AI_FN[ac.owner](ac); }
   }
   /* pilot nag when the player sits on them: suppressed for the promised
      standby window, and never more than one nag per 90 seconds */
@@ -627,7 +673,7 @@ function stepAircraft(ac, dt) {
       (!ac.lastNagAt || G.t - ac.lastNagAt > 90)) {
     const stale = ["gate", "gndCall", "taxiWait", "holdShort", "gndIn"].includes(ac.state) && ac.stateT > 100 + ac.reminders * 80;
     const staleAir = (ac.state === "ctrArr" || ac.state === "appCtl") && !ac.app && ac.stateT > 150 + ac.reminders * 100;
-    if (stale || staleAir) {
+    if ((stale || staleAir) && !freqBusy(ac.owner)) {
       ac.reminders++;
       ac.lastNagAt = G.t;
       ac.say(pick([`${ac.spoken()}, did you copy?`, `${ac.spoken()}, still with you.`, `${ac.spoken()}, standing by.`]));
@@ -667,6 +713,7 @@ function stepAircraft(ac, dt) {
         ac.taxiIdx++;
         if (ac.taxiIdx >= path.length) {
           if (ac.state === "taxi") {
+            queueAtHoldShort(ac);
             ac.state = "holdShortG"; ac.stateT = 0;
             if (isAI("GND")) { ac.called = true; ac.aiAt = G.t + rnd(3, 8); }
             else ac.say(`Ground, ${ac.spoken()}, holding short runway ${rwyWords(G.depRwy.id)}.`);
@@ -726,6 +773,17 @@ function stepAircraft(ac, dt) {
     default:
       flightStep(ac, dt);
   }
+}
+
+/* park an arriving-at-the-hold-short aircraft behind anyone already waiting */
+function queueAtHoldShort(ac) {
+  const waiting = G.aircraft.filter(o => o !== ac && !o.remove &&
+    ["holdShortG", "holdShort"].includes(o.state));
+  if (!waiting.length) return;
+  const back = { x: Math.sin(d2r(ac.hdg + 180)), y: Math.cos(d2r(ac.hdg + 180)) };
+  const step = 0.045 * waiting.length;
+  ac.x += back.x * step;
+  ac.y += back.y * step;
 }
 
 function sameDirAhead(ac, o) {
@@ -957,10 +1015,38 @@ function fixSquawkSpeech(s) {
   });
 }
 
+/* Speech recognisers routinely corrupt standard phraseology:
+   "climbing maintained", "climate maintain", "descending maintain",
+   "turn left heading" losing the "and", and so on. Rewrite the common
+   corruptions back to the phrase the parser expects. */
+const PHRASE_FIX = [
+  [/\bclim(?:b|bing|bin|ate|it|bed)\s*(?:and|in|n|to)?\s*maintain(?:ed|ing)?\b/g, "climb and maintain"],
+  [/\bclim(?:b|bing|bin|ate|it|bed)\s+(?:and\s+)?maintain\b/g, "climb and maintain"],
+  [/\bdescen(?:d|ding|t|ded)\s*(?:and|in|n|to)?\s*maintain(?:ed|ing)?\b/g, "descend and maintain"],
+  [/\bmaintain(?:ed|ing)\b/g, "maintain"],
+  [/\bclim(?:bing|bin|ate|it|bed)\b/g, "climb"],
+  [/\bdescen(?:ding|t|ded)\b/g, "descend"],
+  [/\bcleared?\s+to\s+land(?:ing)?\b/g, "cleared to land"],
+  [/\bclear\s+(?:to|for)\b/g, "cleared to"],
+  [/\bturn(?:ing)?\s+(?:left|lft)\b/g, "turn left"],
+  [/\bturn(?:ing)?\s+right\b/g, "turn right"],
+  [/\bhead(?:ing|ings)?\b/g, "heading"],
+  [/\bsquak|\bsquark|\bsquawking\b/g, "squawk"],
+  [/\bline\s+up\s+and\s+(?:wait|weight)\b/g, "line up and wait"],
+  [/\bcleared?\s+for\s+take\s*off\b/g, "cleared for takeoff"],
+  [/\bcontact\s+to(?:wer|ward)\b/g, "contact tower"],
+  [/\bread\s*back\s+correct(?:ed)?\b/g, "read back correct"],
+  [/\bpush\s*back\s+approved?\b/g, "pushback approved"],
+];
+function fixPhrases(s) {
+  for (const [re, to] of PHRASE_FIX) s = s.replace(re, to);
+  return s;
+}
+
 function normalizeTx(text) {
   let s = text.toLowerCase().replace(/[.,;:!?/\\'-]+/g, " ").replace(/\s+/g, " ").trim();
   s = s.replace(/\bflight level\b/g, "fl");
-  return fixSquawkSpeech(wordsToNumbers(fixSquawkSpeech(s)));
+  return fixSquawkSpeech(wordsToNumbers(fixSquawkSpeech(fixPhrases(s))));
 }
 
 /* Token-based matcher: joins adjacent tokens so speech transcripts like
@@ -987,6 +1073,22 @@ function matchCallsign(s) {
       }
     }
   }
+  /* Fallback for garbled telephony: recognisers turn "Delta 484" into
+     "D484" or drop the airline entirely. If a token carries a flight
+     number that exactly one aircraft on your frequency is using, and
+     any letters on it agree with that airline, take it. */
+  if (!best) {
+    for (let i = 0; i < toks.length; i++) {
+      const m = toks[i].match(/^([a-z]{0,3})(\d{1,4})$/);
+      if (!m) continue;
+      const letters = m[1], num = m[2];
+      const cand = G.aircraft.filter(a => !a.remove && a.num === num &&
+        (a.owner === G.playerPos || !G.playerPos) &&
+        (!letters || a.airline.code.toLowerCase().startsWith(letters[0]) ||
+                     a.airline.tel.toLowerCase().startsWith(letters[0])));
+      if (cand.length === 1) { best = cand[0]; bestSpan = [i, i]; break; }
+    }
+  }
   if (!best) return [null, s];
   const rem = toks.filter((_, k) => k < bestSpan[0] || k > bestSpan[1]).join(" ")
     .replace(/\bheavy\b/, " ").replace(/\s+/g, " ").trim();
@@ -1009,6 +1111,10 @@ const CMD_PATTERNS = [
   { t: "rbok",  re: /\bread\s?back\s+(?:is\s+)?correct\b|\brbc\b|\bcorrect\s+read\s?back\b/, f: () => ({}) },
   { t: "push",  re: /\bpush(?:back)?\s+approved\b|\bpa\b/,                           f: () => ({}) },
   { t: "hold",  re: /\bhold\s+position\b|\bhp\b/,                                    f: () => ({}) },
+  { t: "seq",   re: /\b(?:you(?:'re|\s+are)?\s+)?number\s+(\d{1,2})\b|\b#\s*(\d{1,2})\b/, f: m => ({ n: +(m[1] || m[2]) }) },
+  { t: "follow", re: /\bfollow\s+(?:the\s+)?([a-z0-9 ]{2,22}?)(?=\s*(?:,|$|then|and)\b)/, f: m => ({ who: m[1].trim() }) },
+  { t: "giveway", re: /\bgive\s+way\s+to\s+(?:the\s+)?([a-z0-9 ]{2,22}?)(?=\s*(?:,|$|then|and)\b)/, f: m => ({ who: m[1].trim() }) },
+  { t: "expect", re: /\bexpect\s+(?:runway\s+)?(\d{1,2}[lrc]?)\b/,                    f: m => ({ rwy: m[1].toUpperCase() }) },
   { t: "cont",  re: /\bcontinue(?:\s+taxi)?\b/,                                      f: () => ({}) },
   { t: "taxi",  re: /\btaxi\b(?:\s+to)?(?:\s+runway)?(?:\s+\d+[lrc]?)?(?:\s+via[\w\s]*)?|\btx\b/, f: () => ({}) },
   { t: "luaw",  re: /\bline\s+up\s+and\s+wait\b|\bluaw\b/,                           f: () => ({}) },
@@ -1100,15 +1206,41 @@ function clearanceFlow(ac, s) {
   if (!c.sqkOk) xmit("DEL", "SYS", "warn", `Strip shows ${ac.cs} was assigned squawk ${ac.sqk}, you said ${c.sqkSaid}.`, null);
   const delay = rnd(2.5, 5);
   let rbCruise = c.cruiseSaid || null;
-  /* the induced error can also land on the expected cruise */
-  if (!ac.rbError && rbCruise && Math.random() < 0.12) {
+  let rbSid = ac.sid.name, rbDest = ac.dest.city, rbFreq = depFreq(F), rbSkip = null;
+  /* Readback errors come in several flavours, the way real ones do:
+     transposed squawk digits, a wrong altitude, the wrong SID, the wrong
+     departure frequency, or an item simply left out of the readback. */
+  if (!ac.rbError && Math.random() < 0.10 && rbCruise) {
     ac.rbError = { field: "expected altitude", right: rbCruise };
-    rbCruise = rbCruise + (Math.random() < 0.5 ? 2000 : -2000);
+    rbCruise += (Math.random() < 0.5 ? 2000 : -2000);
   }
-  const text = `Cleared to ${ac.dest.city} via the ${ac.sid.name} then as filed, ` +
-    `climb and maintain ${altWords(rbAlt)}, ` +
+  if (!ac.rbError && Math.random() < 0.08) {
+    const other = G.fac.sids.filter(x => x.name !== ac.sid.name);
+    if (other.length) {
+      ac.rbError = { field: "departure procedure", right: ac.sid.name };
+      rbSid = pick(other).name;
+    }
+  }
+  if (!ac.rbError && Math.random() < 0.07) {
+    ac.rbError = { field: "departure frequency", right: rbFreq };
+    const digits = rbFreq.split(".");
+    rbFreq = digits[0] + "." + String((+digits[1] + 15) % 100).padStart(2, "0");
+  }
+  if (!ac.rbError && Math.random() < 0.07) {
+    const other = DESTS.filter(d => d.icao !== ac.dest.icao && d.icao !== G.fac.icao);
+    ac.rbError = { field: "destination", right: ac.dest.city };
+    rbDest = pick(other).city;
+  }
+  if (!ac.rbError && Math.random() < 0.08) {
+    rbSkip = pick(["squawk", "altitude", "frequency"]);
+    ac.rbError = { field: "readback, they left out the " + rbSkip,
+                   right: rbSkip === "squawk" ? rbSqk : rbSkip === "altitude" ? rbAlt : rbFreq };
+  }
+  const text = `Cleared to ${rbDest} via the ${rbSid} then as filed, ` +
+    (rbSkip === "altitude" ? "" : `climb and maintain ${altWords(rbAlt)}, `) +
     (rbCruise ? `expect ${altWords(rbCruise)} one zero minutes after departure, ` : "") +
-    `departure frequency ${freqWords(F.freqs.APP)}, squawk ${numWords(rbSqk)}, ${ac.spoken()}.`;
+    (rbSkip === "frequency" ? "" : `departure frequency ${freqWords(rbFreq)}, `) +
+    (rbSkip === "squawk" ? "" : `squawk ${numWords(rbSqk)}, `) + `${ac.spoken()}.`;
   ac.pendingRb = { due: G.t + delay, text };
 }
 
@@ -1129,9 +1261,15 @@ function verdictReadback(ac, ok) {
       ac.rbError = null;
       addPoints(6, `caught ${ac.cs}'s bad ${e.field} readback`);
       G.counters.clx++;
-      ac.say(`Ah sorry, ${e.field === "squawk" ? "squawk " + numWords(String(e.right))
+      const fix = e.field === "squawk" ? "squawk " + numWords(String(e.right))
         : e.field === "expected altitude" ? "expect " + altWords(e.right) + " one zero minutes after departure"
-        : altWords(e.right)}, ${ac.spoken()}.`);
+        : e.field === "departure procedure" ? "the " + e.right + " departure"
+        : e.field === "departure frequency" ? "departure " + freqWords(String(e.right))
+        : e.field === "destination" ? "cleared to " + e.right
+        : /squawk/.test(e.field) ? "squawk " + numWords(String(e.right))
+        : /frequency/.test(e.field) ? "departure " + freqWords(String(e.right))
+        : altWords(e.right);
+      ac.say(`Ah sorry, ${fix}, ${ac.spoken()}.`);
       ac.clxStage = 3;
       finishClearance(ac, true);
     } else {
@@ -1149,8 +1287,8 @@ function finishClearance(ac, silent) {
 /* credit or dock the switch depending on the handoff state, then clear it */
 function settleHandoff(ac, to) {
   if (ac.hoTo === to && ac.hoAccepted) addPoints(4, `${ac.cs} handed off cleanly to ${to}`);
-  else if (ac.hoTo === to) xmit(G.playerPos, "SYS", "warn", `${ac.cs} switched before ${to} accepted the handoff.`, null);
-  else addPoints(-3, `${ac.cs} switched to ${to} with no handoff flashed`);
+  else if (ac.hoTo === to) addPoints(2, `${ac.cs} switched, ${to} had not accepted yet`);
+  else addPoints(2, `${ac.cs} shipped to ${to}`);
   ac.hoTo = null; ac.hoAccepted = false;
 }
 
@@ -1232,11 +1370,35 @@ function execOps(ac, ops) {
       }
       case "hold":
         if (["taxi", "taxiIn"].includes(ac.state)) { ac.holdFlag = true; parts.push("holding position"); }
-        else unable.push("hold position");
+        else if (["taxiWait", "gndCall", "clxOk", "holdShortG", "holdShort"].includes(ac.state)) {
+          ac.holdFlag = true; parts.push("holding position");
+        } else unable.push("hold position");
+        break;
+      case "seq":
+        ac.seqNum = op.n;
+        ac.standbyAt = G.t; ac.standbyDur = 60 + op.n * 45;   // they wait their turn quietly
+        parts.push(`number ${numWords(op.n)}`);
+        break;
+      case "follow":
+        ac.followWho = op.who;
+        ac.standbyAt = G.t; ac.standbyDur = 240;
+        parts.push(`following the ${op.who}`);
+        break;
+      case "giveway":
+        ac.holdFlag = true;
+        ac.giveWayTo = op.who;
+        ac.standbyAt = G.t; ac.standbyDur = 240;
+        parts.push(`giving way to the ${op.who}`);
+        break;
+      case "expect":
+        ac.expectRwy = op.rwy;
+        parts.push(`expect runway ${rwyWords(op.rwy)}`);
         break;
       case "cont":
-        if (ac.holdFlag) { ac.holdFlag = false; parts.push("continue taxi"); }
-        else unable.push("continue");
+        if (ac.holdFlag) {
+          ac.holdFlag = false; ac.giveWayTo = null;
+          parts.push("continue taxi");
+        } else unable.push("continue");
         break;
       case "luaw":
         if (ac.role !== "dep" || ac.state !== "holdShort") { unable.push("line up"); break; }
@@ -1248,14 +1410,17 @@ function execOps(ac, ops) {
         parts.push(`line up and wait runway ${rwyWords(G.depRwy.id)}`);
         G.hooks.strips();
         break;
-      case "cto":
+      case "cto": {
         if (ac.role !== "dep" || !["holdShort", "lineup"].includes(ac.state)) { unable.push("takeoff"); break; }
+        const held = tmuHold(ac);
+        if (held) { unable.push(`takeoff, we're holding for ${held}`); break; }
         if (typeof isRwyClosed === "function" && isRwyClosed(G.depRwy.id)) {
           unable.push(`takeoff, runway ${rwyWords(G.depRwy.id)} is closed`); break;
         }
         parts.push(`cleared for takeoff runway ${rwyWords(G.depRwy.id)}`);
         startRoll(ac);
         break;
+      }
       case "ctl":
         if (ac.role !== "arr" || !["twrArr", "appCtl"].includes(ac.state)) { unable.push("landing clearance"); break; }
         ac.landClr = true;
@@ -1374,6 +1539,58 @@ function playerTransmit(raw) {
   G.hooks.strips();
   if (ac.owner !== G.playerPos) { sysLog(`${ac.cs} is not on your frequency (with ${ac.owner}).`); return; }
 
+  /* ---- broad intent layer: pilots answer questions about themselves ----
+     Anything recognisable as a question about state, position, fuel,
+     type, gate, route, altitude, speed or intentions gets a real answer
+     built from that aircraft's actual situation. */
+  const ANSWER = [
+    [/\b(?:status|how.*(?:doing|going)|what.*doing|position\s+check)\b/,
+      a => pilotRequest(a)],
+    [/\bsay\s+(?:your\s+)?(?:position|posit)\b|\bwhere\s+are\s+you\b/,
+      a => a.alt > 100
+        ? `we're ${Math.round(a.distField())} miles out, ${altWords(Math.round(a.alt / 100) * 100)}`
+        : `we're on the ground, ${pilotRequest(a)}`],
+    [/\bsay\s+(?:your\s+)?altitude\b|\bconfirm\s+altitude\b|\bverify\s+altitude\b/,
+      a => a.alt > 100 ? `we're passing ${altWords(Math.round(a.alt / 100) * 100)}`
+                       : "we're on the ground"],
+    [/\bsay\s+(?:your\s+)?(?:speed|airspeed)\b/,
+      a => a.alt > 100 ? `indicating ${numWords(Math.round(a.ias))}` : "we're stopped"],
+    [/\bsay\s+(?:your\s+)?heading\b/, a => `heading ${hdgWords(Math.round(a.hdg))}`],
+    [/\bsay\s+(?:your\s+)?(?:type|aircraft)\b|\bconfirm\s+(?:type|equipment)\b/,
+      a => `we're a ${a.type}${a.heavy ? " heavy" : ""}`],
+    [/\bsay\s+(?:your\s+)?(?:gate|parking|stand)\b|\bconfirm\s+gate\b/,
+      a => a.role === "dep" ? `we're at gate ${a.gate.toLowerCase()}` : "we'll need a gate"],
+    [/\bsay\s+(?:your\s+)?(?:route|routing)\b|\bconfirm\s+route\b/,
+      a => a.role === "dep" ? `we're filed ${a.sid.name} then as filed` : `we're on the ${a.star}`],
+    [/\bsay\s+(?:your\s+)?(?:squawk|beacon|code)\b|\bconfirm\s+squawk\b/,
+      a => `squawking ${numWords(a.sqk)}`],
+    [/\bsay\s+(?:your\s+)?(?:destination|going)\b|\bconfirm\s+destination\b/,
+      a => a.role === "dep" ? `we're going to ${a.dest.city}` : `we're landing here, out of ${a.origin.city}`],
+    [/\bsay\s+(?:your\s+)?fuel\b|\bhow.*fuel\b|\bfuel\s+(?:state|remaining)\b/,
+      a => `we've got about ${numWords(Math.floor(rnd(45, 180)))} minutes of fuel`],
+    [/\bsouls\s+on\s+board\b|\bpob\b/,
+      a => `${numWords(Math.floor(rnd(60, 290)))} souls on board`],
+    [/\bable\b.*\bhigher\b/, a => "affirmative, we can take higher"],
+    [/\bcan\s+you\s+(?:accept|take|do)\b/, a => "affirmative, we can do that"],
+    [/\bhow\s+(?:long|much longer)\b|\bwhen.*ready\b|\badvise\s+when\s+ready\b/,
+      a => ["gate", "clxOk", "gndCall"].includes(a.state) ? "we'll be ready in a few minutes"
+         : "we're ready when you are"],
+    [/\badvise\s+when\s+holding\b|\breport\s+holding\b/,
+      a => { a.reportHolding = true; return "wilco, we'll report holding short"; }],
+    [/\breport\s+(?:when\s+)?established\b/,
+      a => { a.reportEst = true; return "wilco, report established"; }],
+    [/\bhow\s+do\s+you\s+(?:hear|read)\b|\bradio\s+check\b/,
+      a => "we read you five by five"],
+    [/\bare\s+you\s+(?:with|on)\b|\bcheck\s+in\b/, a => pilotRequest(a)],
+  ];
+  for (const [re, fn] of ANSWER) {
+    if (re.test(rest)) {
+      const ans = fn(ac);
+      setTimeout(() => { if (!ac.remove) ac.say(`${ac.spoken()}, ${ans}.`); }, rnd(700, 1500));
+      return;
+    }
+  }
+
   /* conversational intents any pilot understands */
   if (/\bstand\s?by\b|\bhold\s+on\b|\bexpect\s+clearance\b|\bcall\s+you\s+back\b|\bbe\s+with\s+you\b/.test(rest)) {
     const mins = (rest.match(/(\d{1,2})\s*minutes?\b/) || [])[1];
@@ -1477,7 +1694,7 @@ function sendPDC(ac) {
   if (ac.clxStage >= 3) { sysLog(`${ac.cs} is already cleared.`); return false; }
   const F = G.fac;
   xmit("DEL", "TDLS", "sys",
-    `PDC UPLINK ${ac.cs}: CLRD TO ${ac.dest.icao} VIA ${ac.sid.name} DP, MAINT ${F.initAlt}, EXP ${ac.cruise} 10 MIN, DPFRQ ${F.freqs.APP}, SQ ${ac.sqk}`, null);
+    `PDC UPLINK ${ac.cs}: CLRD TO ${ac.dest.icao} VIA ${ac.sid.name} DP, MAINT ${F.initAlt}, EXP ${ac.cruise} 10 MIN, DPFRQ ${depFreq(F)}, SQ ${ac.sqk}`, null);
   ac.clx = { dest: true, sid: true, alt: true, sqkOk: true, sqkSaid: ac.sqk };
   ac.rbError = null;
   ac.pdc = true;
@@ -1492,6 +1709,132 @@ function sendPDC(ac) {
   }, delay * 1000 / Math.max(1, G.speed));
   G.hooks.strips();
   return true;
+}
+
+/* =====================================================================
+   TRAFFIC MANAGEMENT UNIT
+   The national command centre equivalent: ground stops, ground delay
+   programmes with wheels-up times, and miles-in-trail restrictions.
+   These arrive over the landline and actually constrain what you can
+   release, the way a real TMI does.
+   ===================================================================== */
+const TMU = {
+  groundStop: null,        // {dest, until, reason}
+  mit: null,               // {fix, miles, until}
+  gdp: null,               // {until}
+  edct: new Map(),         // callsign -> release time
+};
+function tmuVoice() { return G.ctrlVoice.CTR; }
+function tmuSay(text) {
+  landlineChime();
+  xmit("INT", "TMU", "ctrl", text, tmuVoice());
+  xmit(G.playerPos, "TMU", "sys", text, null);
+}
+function tmuClear() { TMU.groundStop = null; TMU.mit = null; TMU.gdp = null; TMU.edct.clear(); }
+
+function tmuTick() {
+  if (TMU.groundStop && G.t > TMU.groundStop.until) {
+    tmuSay(`Traffic management: the ground stop for ${TMU.groundStop.dest} is cancelled. Normal releases.`);
+    TMU.groundStop = null;
+  }
+  if (TMU.mit && G.t > TMU.mit.until) {
+    tmuSay(`Traffic management: the ${TMU.mit.miles} mile in-trail restriction over ${TMU.mit.fix} is lifted.`);
+    TMU.mit = null;
+  }
+  if (TMU.gdp && G.t > TMU.gdp.until) {
+    tmuSay("Traffic management: the ground delay programme has ended.");
+    TMU.gdp = null;
+    TMU.edct.clear();
+  }
+}
+function tmuRoll() {
+  const roll = Math.random();
+  if (roll < 0.34 && !TMU.groundStop) {
+    const dest = pick(DESTS.filter(d => d.icao !== G.fac.icao));
+    const mins = Math.floor(rnd(8, 22));
+    TMU.groundStop = { dest: dest.icao, until: G.t + mins * 60, reason: pick(
+      ["weather at the destination", "a runway closure at the destination",
+       "volume", "a ground stop from the command centre", "thunderstorms in the arrival corridor"]) };
+    tmuSay(`Traffic management advisory: ground stop for ${dest.icao} traffic, ${mins} minutes, due to ${TMU.groundStop.reason}. Hold all ${dest.icao} departures at the gate.`);
+  } else if (roll < 0.62 && !TMU.mit) {
+    const fx = pick(G.fac.fixes);
+    const miles = pick([10, 15, 20, 25]);
+    TMU.mit = { fix: fx.name, miles, until: G.t + rnd(600, 1500) };
+    tmuSay(`Traffic management: ${miles} miles in trail over ${fx.name}, effective now.`);
+  } else if (roll < 0.8 && !TMU.gdp) {
+    TMU.gdp = { until: G.t + rnd(900, 1800) };
+    tmuSay("Traffic management: ground delay programme in effect. Departures will be issued wheels-up times.");
+  }
+}
+/* is this departure allowed to go right now? */
+function tmuHold(ac) {
+  if (TMU.groundStop && ac.role === "dep" && ac.dest.icao === TMU.groundStop.dest) {
+    return `a ground stop for ${TMU.groundStop.dest}`;
+  }
+  if (TMU.gdp && ac.role === "dep") {
+    if (!TMU.edct.has(ac.cs)) TMU.edct.set(ac.cs, G.t + rnd(120, 600));
+    const t = TMU.edct.get(ac.cs);
+    if (G.t < t) {
+      const mm = Math.max(1, Math.round((t - G.t) / 60));
+      return `a wheels-up time, ${mm} minute${mm === 1 ? "" : "s"} from now`;
+    }
+  }
+  return null;
+}
+
+/* =====================================================================
+   INTER-POSITION COORDINATION
+   The AI positions talk to you the way real adjacent controllers do:
+   departure calls about an inbound before you launch, tower advises when
+   a runway is about to be occupied, centre passes arrival counts.
+   ===================================================================== */
+let coordAt = 60;
+function coordinationTick() {
+  if (G.t < coordAt) return;
+  coordAt = G.t + rnd(70, 160);
+  const P = G.playerPos;
+
+  /* about to launch with an arrival close in: approach coordinates */
+  if (P === "TWR" || P === "GND") {
+    const inbound = G.aircraft.find(a => a.role === "arr" && a.app === "established" &&
+      finalGeom(a, G.arrRwy).along < 9 && finalGeom(a, G.arrRwy).along > 3);
+    const ready = G.aircraft.filter(a => a.role === "dep" &&
+      ["holdShort", "holdShortG", "lineup"].includes(a.state));
+    if (inbound && ready.length && Math.random() < 0.7) {
+      const mi = Math.round(finalGeom(inbound, G.arrRwy).along);
+      landlineChime();
+      xmit("INT", ctrlCallsign("APP"), "ctrl",
+        pick([
+          `Tower, approach: ${inbound.cs} is ${mi} out on the ILS, you've got room for one if you go now.`,
+          `Tower, approach: ${inbound.cs} ${mi} mile final, that's your gap.`,
+          `Approach here, ${inbound.cs} is inside ${mi + 1} miles, next departure needs to be rolling.`,
+        ]), G.ctrlVoice.APP);
+      return;
+    }
+  }
+  /* centre passes an arrival count to approach */
+  if (P === "APP" && Math.random() < 0.5) {
+    const n = G.aircraft.filter(a => a.role === "arr" && a.owner === "CTR").length;
+    if (n) {
+      landlineChime();
+      xmit("INT", ctrlCallsign("CTR"), "ctrl",
+        pick([`Approach, centre: I've got ${n} more for you behind this one.`,
+              `Centre here, ${n} inbound after the current stream.`,
+              `Approach, expect ${n} more off the arrival, then a break.`]), G.ctrlVoice.CTR);
+      return;
+    }
+  }
+  /* ground asks clearance to slow the flow */
+  if (P === "DEL" && Math.random() < 0.4) {
+    const q = G.aircraft.filter(a => ["taxiWait", "taxi", "holdShortG"].includes(a.state)).length;
+    if (q >= 4) {
+      landlineChime();
+      xmit("INT", ctrlCallsign("GND"), "ctrl",
+        pick([`Clearance, ground: I'm stacked up to the runway, can you slow the clearances down?`,
+              `Ground here, ${q} on the taxiways already. Hold the next few at the gate please.`]),
+        G.ctrlVoice.GND);
+    }
+  }
 }
 
 /* =====================================================================
@@ -1577,10 +1920,14 @@ function intercom(pos, action) {
       `Take a gap and send ${G.selected.cs} across, I've got the picture.`,
     ]);
   } else if (action === "pointout" && G.selected) {
+    /* A point-out lets your aircraft clip the next controller's airspace
+       while you keep talking to it. They approve, you retain the track. */
+    G.selected.pointedOut = pos;
+    addPoints(3, `point out on ${G.selected.cs} approved by ${pos}`);
     reply = pick([
-      `${who}, point out approved on ${G.selected.cs}.`,
-      `Point out on ${G.selected.cs}, approved, my traffic's no factor.`,
-      `Roger the point out, ${G.selected.cs}, keep them.`,
+      `${who}, point out approved on ${G.selected.cs}, you keep the track.`,
+      `Point out on ${G.selected.cs}, approved, my traffic is no factor, they stay with you.`,
+      `Roger the point out, ${G.selected.cs}, radar contact, keep them on your frequency.`,
     ]);
   } else {
     reply = pick([`${who}, go ahead.`, `${who}.`, `Go for ${who}.`]);
@@ -1657,9 +2004,13 @@ function startSession(facIdx, playerPos, density) {
   G.monitored.INT = true;
   G.selected = null;
   G.rushPhase = rnd(0, Math.PI * 2);
+  tmuClear();
+  coordAt = 90;
   G.nextEvent = rnd(100, 180);
   nagAt = 120;
-  const r = { low: [180, 210], med: [115, 130], high: [75, 85] }[density];
+  /* seconds between a departure / an arrival. Low is a quiet evening,
+     high is a genuine bank you cannot keep up with by hand. */
+  const r = { low: [200, 240], med: [95, 110], high: [42, 48], insane: [26, 30] }[density] || [95, 110];
   G.nextArr = rnd(6, 20);
   G.nextDep = rnd(2, 10);
   G.rates = r;
@@ -1668,12 +2019,15 @@ function startSession(facIdx, playerPos, density) {
   sysLog(`Session open: ${F.icao} ${cfg.name}. You are ${ctrlCallsign(playerPos)} (${POS_NAME[playerPos]}) on ${F.freqs[playerPos]}.`);
   sysLog(`ATIS ${G.atis.letter}: wind ${G.atis.windDir}/${String(G.atis.windSpd).padStart(2, "0")}, landing ${G.arrRwy.id}, departing ${G.depRwy.id}. All other positions are AI-staffed.`);
   /* opening traffic */
-  for (let i = 0; i < (density === "high" ? 3 : 2); i++) spawnDep(i * 15);
-  spawnArr();
+  const seed = { low: 2, med: 4, high: 7, insane: 10 }[density] || 4;
+  for (let i = 0; i < seed; i++) spawnDep(i * 8);
+  const seedArr = { low: 1, med: 2, high: 4, insane: 5 }[density] || 2;
+  for (let i = 0; i < seedArr; i++) spawnArr();
 }
 
 function spawnDep(delay = 0) {
-  if (G.aircraft.filter(a => a.role === "dep" && !["out"].includes(a.state)).length >= 9) return;
+  const capD = { low: 7, med: 12, high: 20, insane: 28 }[G.density] || 12;
+  if (G.aircraft.filter(a => a.role === "dep" && a.state !== "out").length >= capD) return;
   const ac = new Aircraft("dep");
   if (G.aircraft.some(o => o.cs === ac.cs)) return;
   ac.callAt = G.t + rnd(4, 20) + delay;
@@ -1681,7 +2035,8 @@ function spawnDep(delay = 0) {
   G.hooks.strips();
 }
 function spawnArr() {
-  if (G.aircraft.filter(a => a.role === "arr").length >= 7) return;
+  const capA = { low: 5, med: 8, high: 13, insane: 18 }[G.density] || 8;
+  if (G.aircraft.filter(a => a.role === "arr").length >= capA) return;
   const ac = new Aircraft("arr");
   if (G.aircraft.some(o => o.cs === ac.cs)) return;
   G.aircraft.push(ac);
@@ -1689,6 +2044,7 @@ function spawnArr() {
 }
 
 function randomEvent() {
+  if (Math.random() < 0.3) { tmuRoll(); return; }
   const roll = Math.random();
   if (roll < 0.45) return;
   if (roll < 0.55) {
@@ -1750,6 +2106,8 @@ function tickEngine(realDt) {
     uiAcc = 0;
     checkSeparation();
     if (typeof safetyLogicScan === "function") safetyLogicScan();
+    tmuTick();
+    coordinationTick();
     intercomNags();
     G.hooks.score();
   }

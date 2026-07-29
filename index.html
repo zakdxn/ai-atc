@@ -87,6 +87,13 @@ main{flex:1;display:flex;min-height:0}
 #log .sys{color:var(--yellow)}
 #log .warn{color:var(--red)}
 #log .who{font-weight:700}
+#cheat{border-top:1px solid var(--edge);padding:6px 8px;max-height:34%;overflow-y:auto}
+#cheat .lbl{font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:4px}
+.cheatsel{font-size:11px;color:var(--yellow);margin-bottom:5px}
+.cheatrow{cursor:pointer;padding:3px 4px;border-radius:3px;margin-bottom:2px;line-height:1.3}
+.cheatrow:hover{background:#16202a}
+.cheatrow code{display:block;font-size:10.5px;color:var(--accent);background:none;padding:0}
+.cheatrow i{font-style:normal;font-size:9.5px;color:var(--dim)}
 #intercom{border-top:1px solid var(--edge);padding:6px 8px}
 #intercom .lbl{font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:4px}
 #intercom .btns{display:flex;gap:5px;flex-wrap:wrap}
@@ -144,7 +151,7 @@ footer .freq{color:var(--dim);white-space:nowrap;font-size:12px}
 <body>
 
 <header>
-  <span class="title">AI ATC</span><span class="fac" id="build" title="Build number. If this does not match what Claude reports, your browser is serving a cached copy: hard-refresh with Ctrl+Shift+R.">b8</span>
+  <span class="title">AI ATC</span><span class="fac" id="build" title="Build number. If this does not match what Claude reports, your browser is serving a cached copy: hard-refresh with Ctrl+Shift+R.">b10</span>
   <span class="fac" id="facinfo">offline</span>
   <span class="clock" id="clock">00:00:00</span>
   <div class="chips">
@@ -175,6 +182,7 @@ footer .freq{color:var(--dim);white-space:nowrap;font-size:12px}
   <aside id="commsbay">
     <div id="freqtabs"></div>
     <div id="log"></div>
+    <div id="cheat"></div>
     <div id="intercom">
       <div class="lbl">LANDLINES</div>
       <div class="btns" id="intbtns"></div>
@@ -195,13 +203,13 @@ footer .freq{color:var(--dim);white-space:nowrap;font-size:12px}
 <div class="overlay" id="tdls"><div class="card" id="tdlscard"></div></div>
 <div class="overlay" id="fp"><div class="card" id="fpcard"></div></div>
 
-<script src="airports.js?v=8"></script>
-<script src="data.js?v=8"></script>
-<script src="audio.js?v=8"></script>
-<script src="engine.js?v=8"></script>
-<script src="geo.js?v=8"></script>
-<script src="views.js?v=8"></script>
-<script src="dcb.js?v=8"></script>
-<script src="app.js?v=8"></script>
+<script src="airports.js?v=10"></script>
+<script src="data.js?v=10"></script>
+<script src="audio.js?v=10"></script>
+<script src="engine.js?v=10"></script>
+<script src="geo.js?v=10"></script>
+<script src="views.js?v=10"></script>
+<script src="dcb.js?v=10"></script>
+<script src="app.js?v=10"></script>
 </body>
 </html>

@@ -77,9 +77,8 @@ const TTS = {
     this.speaking = true;
     squelch(0.05, 0.06);
     setTimeout(() => {
-      if (this.held) {                       // keyed during the lead-in: put it back
+      if (this.held) {                       // keyed during the lead-in: drop it
         this.speaking = false;
-        this.queue.unshift(item);
         this.current = null;
         return;
       }
@@ -95,11 +94,11 @@ const TTS = {
       speechSynthesis.speak(u);
     }, 90);
   },
-  /* The controller keys the mic: nobody talks over you. Whatever was
-     mid-transmission is re-queued and repeated once you unkey. */
+  /* The controller keys the mic: nobody talks over you. Keying over a
+     transmission drops it, the way stepping on someone does, since you
+     have already read it in the log and want to answer. */
   hold() {
     this.held = true;
-    if (this.current) this.queue.unshift(this.current);
     this.current = null;
     if ("speechSynthesis" in window) speechSynthesis.cancel();
     this.speaking = false;

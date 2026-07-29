@@ -81,10 +81,12 @@ function renderMenu() {
           <option value="low">LOW</option>
           <option value="med" selected>MEDIUM</option>
           <option value="high">HIGH</option>
+          <option value="insane">EVENT BANK</option>
         </select>
       </label>
       <button class="bigbtn" id="mStart">CONNECT</button>
-      <span class="dimtxt">Check the SOP button after connecting: it tells you exactly what to issue at your position.</span>
+      <span class="dimtxt">LOW is a quiet evening. HIGH is a real bank. EVENT BANK is a VATSIM event: you will be behind.
+      Check the SOP after connecting for this session's runways, altitudes and frequencies.</span>
     </div>`;
   el.querySelectorAll(".faccard").forEach(c => c.onclick = () => { selFac = +c.dataset.f; renderMenu(); });
   el.querySelectorAll(".poscard").forEach(c => c.onclick = () => {
@@ -205,6 +207,69 @@ function renderStrips() {
   });
 }
 
+/* ---------------- what to say at this position ----------------
+   A live cheat sheet: the exact instruction the aircraft in front of you
+   is waiting for, with this session's runway and route filled in. */
+function renderCheat() {
+  const el = document.getElementById("cheat");
+  if (!el || !G.running) return;
+  const F = G.fac, P = G.playerPos;
+  const sel = G.selected && !G.selected.remove ? G.selected : null;
+  const depRoute = (F.taxi && F.taxi[G.depRwy.id]) ? F.taxi[G.depRwy.id].names : "";
+  const arrRoute = (F.taxi && F.taxi["in_" + G.arrRwy.id]) ? F.taxi["in_" + G.arrRwy.id].names : "";
+  const lines = {
+    DEL: [
+      [`cleared to [dest], [SID] departure then as filed, climb and maintain ${F.initAlt}, expect [ALT on strip], departure frequency ${depFreq(F)}, squawk [BCN]`, "the full clearance"],
+      ["readback correct", "after they read it back, if it was right"],
+      ["readback incorrect", "if they busted an item"],
+      ["contact ground", "when they are ready to push"],
+    ],
+    GND: [
+      ["pushback approved", "they are at the gate asking to push"],
+      [`taxi runway ${G.depRwy.id} via ${depRoute}, hold short`, "departures. Just say \u201ctaxi\u201d and the route is filled in"],
+      [`taxi to the gate via ${arrRoute}`, "arrivals off the runway"],
+      ["number 2", "sequence them so they stop calling"],
+      ["give way to the company 737, then continue", "let one pass"],
+      ["hold position / continue", "stop and restart"],
+      ["contact tower", "once they are holding short"],
+    ],
+    TWR: [
+      ["line up and wait", `runway ${G.depRwy.id}`],
+      ["cleared for takeoff", `runway ${G.depRwy.id}`],
+      ["cleared to land", `runway ${G.arrRwy.id}`],
+      ["contact departure", "climbing through about 700 ft"],
+      ["contact ground", "after they clear the runway"],
+      ["go around", "if the runway is not going to be clear"],
+    ],
+    APP: [
+      ["turn left heading 270, descend and maintain 4000", "vectors to the final"],
+      ["reduce speed 210", "spacing"],
+      [`cleared ILS runway ${G.arrRwy.id}`, "30 degrees or less, at or below 3000 by 10 miles"],
+      ["contact tower", "established and inside 6 miles"],
+      ["climb and maintain 12000, direct [exit fix]", "departures"],
+      ["contact center", "above 4000 and 12 miles out"],
+    ],
+    CTR: [
+      ["descend via", "arrivals on the STAR"],
+      ["descend and maintain 11000", "manual descent"],
+      ["contact approach", "by about 38 miles"],
+      ["climb and maintain 23000, direct [exit fix]", "departures"],
+      ["contact center", "leaving the sector"],
+    ],
+  }[P] || [];
+  el.innerHTML =
+    `<div class="lbl">WHAT ${P} SAYS &nbsp;<span class="dimtxt">RWY ${G.arrRwy.id} ARR / ${G.depRwy.id} DEP</span></div>` +
+    (sel ? `<div class="cheatsel">${sel.cs}: <b>${pilotRequest(sel)}</b></div>` : "") +
+    lines.map(([cmd, why]) =>
+      `<div class="cheatrow" data-cmd="${escapeHtml(cmd)}"><code>${escapeHtml(cmd)}</code><i>${escapeHtml(why)}</i></div>`).join("");
+  el.querySelectorAll(".cheatrow").forEach(r => r.onclick = () => {
+    const box = document.getElementById("cmd");
+    const cs = G.selected && !G.selected.remove ? G.selected.cs + " " : "";
+    box.value = cs + r.dataset.cmd;
+    box.focus();
+  });
+}
+
 /* ---------------- intercom buttons ---------------- */
 function renderIntercom() {
   const el = document.getElementById("intbtns");
@@ -242,7 +307,7 @@ G.hooks.log = (chan, who, cls, text) => {
     if (tab) tab.classList.add("unread");
   }
 };
-G.hooks.strips = () => renderStrips();
+G.hooks.strips = () => { renderStrips(); renderCheat(); };
 G.hooks.score = () => { syncCareer(); renderHeader(); };
 
 /* ---------------- SOPs ---------------- */
@@ -310,7 +375,7 @@ function beginSession(facIdx, pos, density) {
   setView(pos === "DEL" || pos === "GND" ? "ASDX" : pos === "TWR" ? "CAB" : "STARS");
   V.range = pos === "CTR" ? 60 : 45;
   V.pan = { x: 0, y: 0 }; V.asdxPan = { x: 0, y: 0 }; V.cabPan = { x: 0, y: 0 };
-  renderTabs(); renderLog(); renderStrips(); renderIntercom(); renderHeader();
+  renderTabs(); renderLog(); renderStrips(); renderIntercom(); renderHeader(); renderCheat();
   const ph = {
     DEL: "DAL123 cleared to Boston, DEEZZ5 departure then as filed, climb and maintain 5000, departure 127.4, squawk 2345 · then: readback correct",
     GND: "DAL123 pushback approved · taxi · hold position · contact tower",

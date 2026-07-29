@@ -239,6 +239,7 @@ function drawASDX() {
     rwy: "#000", rwyLine: null,
     ramp: sh(N ? "#6a6b70" : "#8f9096", bt), bldg: sh(ASDX_BLDG, bt),
     label: sh("#c8ccd2", bt), twLabel: sh("#e8c95a", bt), holdBar: "#c8a020",
+    edge: sh(N ? "#3f4a52" : "#5d666e", bt),
   });
 
   /* safety logic: paint the runway red when occupied with traffic short final */
@@ -319,6 +320,19 @@ function drawPavement(W2S, scale, TH) {
     };
     for (const p of G.fac.pav.apr) poly(p, TH.ramp);
     for (const p of G.fac.pav.twy) poly(p, TH.taxi);
+    /* thin outline so the pavement reads as taxiways instead of one blob */
+    if (TH.edge) {
+      ctx.strokeStyle = TH.edge;
+      ctx.lineWidth = 0.9;
+      for (const p of G.fac.pav.twy) {
+        ctx.beginPath();
+        for (let i = 0; i < p.length; i += 2) {
+          const [x, y] = W2S({ x: p[i], y: p[i + 1] });
+          i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+        }
+        ctx.closePath(); ctx.stroke();
+      }
+    }
     drawTaxiLabels(W2S, scale, TH);
     /* the routes in use, drawn as painted centrelines */
     if (TH.taxiLine) {
@@ -413,9 +427,23 @@ function drawRunways(W2S, scale, TH) {
       ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
       ctx.setLineDash([]);
     }
+    /* threshold bars and a dashed centreline */
+    const hw = Math.max(4, (r.w || 0.05) * scale / 2);
+    const px = Math.cos(d2r(r.hdg)) * hw, py = -Math.sin(d2r(r.hdg)) * hw;
+    ctx.strokeStyle = "#e8e8e8";
+    ctx.lineWidth = Math.max(1.2, hw * 0.14);
+    for (const [ex, ey] of [[x1, y1], [x2, y2]]) {
+      ctx.beginPath(); ctx.moveTo(ex + px, ey - py); ctx.lineTo(ex - px, ey + py); ctx.stroke();
+    }
+    ctx.setLineDash([Math.max(5, hw), Math.max(7, hw * 1.4)]);
+    ctx.lineWidth = Math.max(1, hw * 0.1);
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    ctx.setLineDash([]);
     ctx.fillStyle = TH.label;
-    ctx.fillText(r.id, x1 + 6, y1 - 6);
-    ctx.fillText(r.recip, x2 + 6, y2 - 6);
+    ctx.font = mono(Math.max(9, Math.min(14, hw * 0.9)));
+    ctx.fillText(r.id, x1 + 7, y1 - 7);
+    ctx.fillText(r.recip, x2 + 7, y2 - 7);
+    ctx.font = mono(11);
   }
   ctx.lineWidth = 1;
 }
@@ -474,6 +502,7 @@ function drawCAB() {
     label: night ? "#e8e8e8" : "#20242a",
     twLabel: night ? "#f0d060" : "#7a5c10",
     holdBar: "#d9a520",
+    edge: night ? "#55564e" : "#6e6e64",
   });
 
   /* aircraft */
