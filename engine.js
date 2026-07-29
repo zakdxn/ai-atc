@@ -58,6 +58,7 @@ const G = {
   score: 0, points: 0,   // session score / career points earned this session
   counters: { clx: 0, taxi: 0, tko: 0, ldg: 0, ils: 0, ho: 0, sep: 0, ga: 0 },
   arrSeq: [],
+  arrSpacing: 6.5,       // Dynamic arrival spacing requested by TWR
   nextArr: 20, nextDep: 6, nextEvent: 120,
   rushPhase: rnd(0, Math.PI * 2),
   density: "med",
@@ -151,6 +152,7 @@ class Aircraft {
       ? pick(["PBN/A1B1C1D1", "RVSM", "STS/HOSP", "OPR/CARGO", "TCAS", "RMK/SIMBRIEF"]) : "";
     this.hoTo = null;                                       // pending handoff position
     this.hoAccepted = false;
+    this.rwy = null;                       // assigned runway override
 
     this.x = 0; this.y = 0; this.alt = 0; this.hdg = 0;
     this.targetHdg = 0; this.turnDir = null;
@@ -273,21 +275,21 @@ function pilotCheckIn(ac) {
         `Ground, ${ac.spoken()}, we'd like to push, gate ${ac.gate.toLowerCase()}.`,
       ]));
       else ac.say(pick([
-        `Ground, ${ac.spoken()}, clear of runway ${rwyWords(G.arrRwy.id)}, taxi to the gate.`,
-        `Ground, ${ac.spoken()} with you off ${rwyWords(G.arrRwy.id)}, where would you like us?`,
+        `Ground, ${ac.spoken()}, clear of runway ${rwyWords((ac.rwy || G.arrRwy).id)}, taxi to the gate.`,
+        `Ground, ${ac.spoken()} with you off ${rwyWords((ac.rwy || G.arrRwy).id)}, where would you like us?`,
         `Ground, ${ac.spoken()}, down and clear, gate please.`,
       ]));
       break;
     case "TWR":
       if (ac.role === "dep") ac.say(pick([
-        `Tower, ${ac.spoken()}, holding short runway ${rwyWords(G.depRwy.id)}, ready.`,
-        `Tower, ${ac.spoken()}, ready to go, ${rwyWords(G.depRwy.id)}.`,
-        `${facSpoken(F)} tower, ${ac.spoken()}, short of ${rwyWords(G.depRwy.id)}, ready for departure.`,
+        `Tower, ${ac.spoken()}, holding short runway ${rwyWords((ac.rwy || G.depRwy).id)}, ready.`,
+        `Tower, ${ac.spoken()}, ready to go, ${rwyWords((ac.rwy || G.depRwy).id)}.`,
+        `${facSpoken(F)} tower, ${ac.spoken()}, short of ${rwyWords((ac.rwy || G.depRwy).id)}, ready for departure.`,
       ]));
       else ac.say(pick([
-        `Tower, ${ac.spoken()}, ${Math.max(1, Math.round(finalGeom(ac, G.arrRwy).along))} mile final, runway ${rwyWords(G.arrRwy.id)}.`,
-        `Tower, ${ac.spoken()} with you on the ILS ${rwyWords(G.arrRwy.id)}.`,
-        `Tower, ${ac.spoken()}, ${Math.max(1, Math.round(finalGeom(ac, G.arrRwy).along))} out for ${rwyWords(G.arrRwy.id)}.`,
+        `Tower, ${ac.spoken()}, ${Math.max(1, Math.round(finalGeom(ac, ac.rwy || G.arrRwy).along))} mile final, runway ${rwyWords((ac.rwy || G.arrRwy).id)}.`,
+        `Tower, ${ac.spoken()} with you on the ILS ${rwyWords((ac.rwy || G.arrRwy).id)}.`,
+        `Tower, ${ac.spoken()}, ${Math.max(1, Math.round(finalGeom(ac, ac.rwy || G.arrRwy).along))} out for ${rwyWords((ac.rwy || G.arrRwy).id)}.`,
       ]));
       break;
     case "APP":
@@ -333,6 +335,16 @@ function aiDEL(ac) {
   if (ac.state !== "gate" || !ac.called) return;
   const F = G.fac;
   if (ac.clxStage === 1) {
+    const pdcRate = ["high", "insane"].includes(G.density) ? 0.8 : 0.3;
+    if (Math.random() < pdcRate) {
+       xmit("DEL", "TDLS", "sys", `PDC UPLINK ${ac.cs}: CLRD TO ${ac.dest.icao} VIA ${ac.sid.name} DP, MAINT ${F.initAlt}, EXP ${ac.cruise} 10 MIN, DPFRQ ${depFreq(F)}, SQ ${ac.sqk}`, null);
+       ac.clx = { dest: true, sid: true, alt: true, sqkOk: true, sqkSaid: ac.sqk };
+       ac.rbError = null;
+       ac.pdc = true;
+       ac.clxStage = 3;
+       ac.aiAt = G.t + rnd(4, 9);
+       return;
+    }
     aiSay("DEL", `${ac.spoken()}, cleared to ${ac.dest.city} airport, ${ac.sid.name} departure then as filed, climb and maintain ${altWords(F.initAlt)}, expect ${altWords(ac.cruise)} one zero minutes after departure, departure frequency ${freqWords(depFreq(F))}, squawk ${numWords(ac.sqk)}.`);
     ac.clxStage = 2;
     ac.aiAt = G.t + rnd(4, 8);
@@ -341,11 +353,15 @@ function aiDEL(ac) {
     ac.clxStage = 3;
     ac.aiAt = G.t + rnd(2, 4);
   } else if (ac.clxStage === 3) {
-    aiSay("DEL", pick([
-      `${ac.spoken()}, readback correct. Call ground for push, have a good flight.`,
-      `${ac.spoken()}, readback correct, ground when ready.`,
-      `Readback correct, ${ac.spoken()}, ${BYE()}.`,
-    ]));
+    if (ac.pdc) {
+      ac.say(`${ac.spoken()}, PDC received for ${ac.dest.city}, ${altWords(F.initAlt)} initial, expect ${altWords(ac.cruise)}, squawking ${numWords(ac.sqk)}.`);
+    } else {
+      aiSay("DEL", pick([
+        `${ac.spoken()}, readback correct. Call ground for push, have a good flight.`,
+        `${ac.spoken()}, readback correct, ground when ready.`,
+        `Readback correct, ${ac.spoken()}, ${BYE()}.`,
+      ]));
+    }
     ac.state = "clxOk";
     ac.stateT = 0;
     ac.aiAt = 0;
@@ -363,18 +379,25 @@ function aiGND(ac) {
   const F = G.fac;
   if (ac.role === "dep") {
     if (ac.state === "gndCall" && ac.called) {
+      const held = tmuHold(ac);
+      if (held) {
+        aiSay("GND", `${ac.spoken()}, pushback denied, we are holding for ${held}. Monitor ground.`);
+        ac.monitorOnly = true;
+        ac.standbyAt = G.t; ac.standbyDur = 180;
+        return;
+      }
       aiSay("GND", pick([
-        `${ac.spoken()}, pushback approved, expect runway ${rwyWords(G.depRwy.id)}.`,
-        `${ac.spoken()}, push approved, tail wherever works, runway ${rwyWords(G.depRwy.id)} today.`,
+        `${ac.spoken()}, pushback approved, expect runway ${rwyWords((ac.rwy || G.depRwy).id)}.`,
+        `${ac.spoken()}, push approved, tail wherever works, runway ${rwyWords((ac.rwy || G.depRwy).id)} today.`,
         `${ac.spoken()}, push at your discretion, advise ready to taxi.`,
       ]));
       startPush(ac);
     } else if (ac.state === "taxiWait" && ac.called) {
-      const tx = G.fac.taxi[G.depRwy.id];
+      const tx = G.fac.taxi[(ac.rwy || G.depRwy).id];
       aiSay("GND", pick([
-        `${ac.spoken()}, runway ${rwyWords(G.depRwy.id)}, taxi via ${tx.names}, hold short.`,
-        `${ac.spoken()}, taxi runway ${rwyWords(G.depRwy.id)} via ${tx.names}, hold short of the runway.`,
-        `${ac.spoken()}, ${rwyWords(G.depRwy.id)} via ${tx.names}, hold short, follow company if you see them.`,
+        `${ac.spoken()}, runway ${rwyWords((ac.rwy || G.depRwy).id)}, taxi via ${tx.names}, hold short.`,
+        `${ac.spoken()}, taxi runway ${rwyWords((ac.rwy || G.depRwy).id)} via ${tx.names}, hold short of the runway.`,
+        `${ac.spoken()}, ${rwyWords((ac.rwy || G.depRwy).id)} via ${tx.names}, hold short, follow company if you see them.`,
       ]));
       startTaxi(ac);
     } else if (ac.state === "holdShortG") {
@@ -388,7 +411,7 @@ function aiGND(ac) {
     }
   } else {
     if (ac.state === "gndIn" && ac.called) {
-      const txIn = G.fac.taxi["in_" + G.arrRwy.id];
+      const txIn = G.fac.taxi["in_" + (ac.rwy || G.arrRwy).id];
       aiSay("GND", pick([
         `${ac.spoken()}, taxi to the gate via ${txIn.names}, welcome in.`,
         `${ac.spoken()}, gate's yours via ${txIn.names}.`,
@@ -401,17 +424,19 @@ function aiGND(ac) {
 
 function startPush(ac) { ac.state = "push"; ac.stateT = 0; ac.pushT = rnd(20, 30); G.hooks.strips(); }
 function startTaxi(ac) {
-  const tx = G.fac.taxi[G.depRwy.id];
+  const tx = G.fac.taxi[(ac.rwy || G.depRwy).id];
+  if (!tx) return; // safety check
   ac.state = "taxi"; ac.stateT = 0;
   ac.taxiPath = tx.path; ac.taxiIdx = 0; ac.ias = 16;
   /* skip any leading waypoints already behind the stand */
   while (ac.taxiIdx < ac.taxiPath.length - 1 &&
          dist2(ac, ac.taxiPath[ac.taxiIdx]) > dist2(ac, ac.taxiPath[ac.taxiIdx + 1])) ac.taxiIdx++;
-  if (G.playerPos === "GND") { addPoints(4, `${ac.cs} taxiing to ${G.depRwy.id}`); G.counters.taxi++; }
+  if (G.playerPos === "GND") { addPoints(4, `${ac.cs} taxiing to ${(ac.rwy || G.depRwy).id}`); G.counters.taxi++; }
   G.hooks.strips();
 }
 function startTaxiIn(ac) {
-  const txIn = G.fac.taxi["in_" + G.arrRwy.id];
+  const txIn = G.fac.taxi["in_" + (ac.rwy || G.arrRwy).id];
+  if (!txIn) return; // safety check
   ac.state = "taxiIn"; ac.stateT = 0;
   ac.taxiPath = txIn.path.concat([{ x: G.fac.gates.anchor.x + rnd(-0.1, 0.1), y: G.fac.gates.anchor.y + rnd(-0.06, 0.06) }]);
   ac.taxiIdx = 0; ac.ias = 15;
@@ -419,19 +444,19 @@ function startTaxiIn(ac) {
   G.hooks.strips();
 }
 
-function runwayFreeForTakeoff() {
+function runwayFreeForTakeoff(ac) {
   /* nobody rolling/lined up on the dep runway, arrival final clear */
-  const sameRwy = G.arrRwy.id === G.depRwy.id;
+  const depRwy = ac.rwy || G.depRwy;
   for (const o of G.aircraft) {
+    if (o === ac) continue;
+    const oRwy = o.rwy || (o.role === "arr" ? G.arrRwy : G.depRwy);
+    if (oRwy.id !== depRwy.id) continue;
+    
     if ((o.state === "rolling" || o.state === "lineup") && !o.remove) return false;
     if (o.state === "climb" && o.alt < 400) return false;
-    if (sameRwy && o.state === "landedRoll") return false;
-  }
-  if (sameRwy) {
-    for (const o of G.aircraft) {
-      if (o.role === "arr" && (o.state === "appCtl" || o.state === "twrArr") &&
-          o.app === "established" && finalGeom(o, G.arrRwy).along < 6) return false;
-    }
+    if (o.state === "landedRoll") return false;
+    if (o.role === "arr" && (o.state === "appCtl" || o.state === "twrArr") &&
+        o.app === "established" && finalGeom(o, oRwy).along < 6) return false;
   }
   return true;
 }
@@ -439,14 +464,15 @@ function runwayFreeForTakeoff() {
 function aiTWR(ac) {
   const F = G.fac;
   if (ac.role === "dep") {
-    if (ac.state === "holdShort" && ac.called && runwayFreeForTakeoff() && !tmuHold(ac) &&
-        !(typeof isRwyClosed === "function" && isRwyClosed(G.depRwy.id))) {
+    const depId = (ac.rwy || G.depRwy).id;
+    if (ac.state === "holdShort" && ac.called && runwayFreeForTakeoff(ac) && !tmuHold(ac) &&
+        !(typeof isRwyClosed === "function" && isRwyClosed(depId))) {
       aiSay("TWR", pick([
-        `${ac.spoken()}, wind ${hdgWords(G.atis.windDir)} at ${numWords(G.atis.windSpd)}, runway ${rwyWords(G.depRwy.id)}, cleared for takeoff.`,
-        `${ac.spoken()}, runway ${rwyWords(G.depRwy.id)}, cleared for takeoff, wind ${hdgWords(G.atis.windDir)} at ${numWords(G.atis.windSpd)}.`,
-        `${ac.spoken()}, no delay, runway ${rwyWords(G.depRwy.id)}, cleared for takeoff.`,
+        `${ac.spoken()}, wind ${hdgWords(G.atis.windDir)} at ${numWords(G.atis.windSpd)}, runway ${rwyWords(depId)}, cleared for takeoff.`,
+        `${ac.spoken()}, runway ${rwyWords(depId)}, cleared for takeoff, wind ${hdgWords(G.atis.windDir)} at ${numWords(G.atis.windSpd)}.`,
+        `${ac.spoken()}, no delay, runway ${rwyWords(depId)}, cleared for takeoff.`,
       ]));
-      ac.say(`Cleared for takeoff runway ${rwyWords(G.depRwy.id)}, ${ac.spoken()}.`);
+      ac.say(`Cleared for takeoff runway ${rwyWords(depId)}, ${ac.spoken()}.`);
       startRoll(ac);
     } else if (ac.state === "climb" && ac.alt >= 700) {
       aiSay("TWR", `${ac.spoken()}, contact departure, good day.`);
@@ -459,16 +485,17 @@ function aiTWR(ac) {
       ac.aiAt = G.t + 6;                       // wait for the runway
     }
   } else {
+    const arrId = (ac.rwy || G.arrRwy).id;
     if (ac.state === "twrArr" && ac.called && !ac.landClr) {
       aiSay("TWR", pick([
-        `${ac.spoken()}, wind ${hdgWords(G.atis.windDir)} at ${numWords(G.atis.windSpd)}, runway ${rwyWords(G.arrRwy.id)}, cleared to land.`,
-        `${ac.spoken()}, runway ${rwyWords(G.arrRwy.id)}, cleared to land, wind ${hdgWords(G.atis.windDir)} at ${numWords(G.atis.windSpd)}.`,
-        `${ac.spoken()}, number one, runway ${rwyWords(G.arrRwy.id)}, cleared to land.`,
+        `${ac.spoken()}, wind ${hdgWords(G.atis.windDir)} at ${numWords(G.atis.windSpd)}, runway ${rwyWords(arrId)}, cleared to land.`,
+        `${ac.spoken()}, runway ${rwyWords(arrId)}, cleared to land, wind ${hdgWords(G.atis.windDir)} at ${numWords(G.atis.windSpd)}.`,
+        `${ac.spoken()}, number one, runway ${rwyWords(arrId)}, cleared to land.`,
       ]));
-      ac.say(`Cleared to land runway ${rwyWords(G.arrRwy.id)}, ${ac.spoken()}.`);
+      ac.say(`Cleared to land runway ${rwyWords(arrId)}, ${ac.spoken()}.`);
       ac.landClr = true;
     } else if (ac.state === "rwyExit") {
-      const txIn = G.fac.taxi["in_" + G.arrRwy.id];
+      const txIn = G.fac.taxi["in_" + arrId] || G.fac.taxi["in_" + G.arrRwy.id];
       aiSay("TWR", `${ac.spoken()}, exit ${txIn.names} when able, contact ground ${freqWords(F.freqs.GND)}.`);
       ac.say(`To ground, ${ac.spoken()}, good day.`);
       ac.state = "gndIn"; ac.stateT = 0;
@@ -485,9 +512,10 @@ function startRoll(ac) {
       o.x += fwd.x * 0.045; o.y += fwd.y * 0.045;
     }
   }
+  const rwy = ac.rwy || G.depRwy;
   ac.state = "rolling"; ac.stateT = 0;
-  ac.x = G.depRwy.thr.x; ac.y = G.depRwy.thr.y;
-  ac.hdg = ac.targetHdg = G.depRwy.hdg;
+  ac.x = rwy.thr.x; ac.y = rwy.thr.y;
+  ac.hdg = ac.targetHdg = rwy.hdg;
   ac.ias = 0;
   ac.assignedAlt = ac.assignedAlt || G.fac.initAlt;
   if (G.playerPos === "TWR") { addPoints(8, `${ac.cs} departing`); G.counters.tko++; }
@@ -521,12 +549,13 @@ function aiAPP(ac) {
 
   /* arrivals */
   if (ac.state !== "appCtl") return;
-  const g = finalGeom(ac, G.arrRwy);
+  const arrId = (ac.rwy || G.arrRwy).id;
+  const g = finalGeom(ac, ac.rwy || G.arrRwy);
   if (!ac.appPlan) {
     const straight = g.along > 14 && Math.abs(g.cross) < 11;
     ac.appPlan = { mode: straight ? "str" : "dw", side: g.cross >= 0 ? 1 : -1, stage: 0, ext: 0 };
     G.arrSeq.push(ac.id);
-    aiSay("APP", `${ac.spoken()}, ${facSpoken(F)} approach, expect ILS runway ${rwyWords(G.arrRwy.id)}. Descend and maintain ${altWords(straight ? 4000 : 6000)}.`);
+    aiSay("APP", `${ac.spoken()}, ${facSpoken(F)} approach, expect ILS runway ${rwyWords(arrId)}. Descend and maintain ${altWords(straight ? 4000 : 6000)}.`);
     ac.say(`Down to ${altWords(straight ? 4000 : 6000)}, expecting the ILS, ${ac.spoken()}.`);
     ac.assignedAlt = ac.targetAlt = straight ? 4000 : 6000;
     ac.targetIas = 250;
@@ -535,19 +564,22 @@ function aiAPP(ac) {
   }
   const P = ac.appPlan;
   const ahead = seqLeader(ac);
-  const gapOk = !ahead || (finalGeom(ahead, G.arrRwy).along < g.along - 6.5) ||
+  
+  // Use dynamically requested spacing or default 6.5
+  const reqGap = G.arrSpacing || 6.5;
+  const gapOk = !ahead || (finalGeom(ahead, ac.rwy || G.arrRwy).along < g.along - reqGap) ||
                 ["twrArr", "landedRoll", "rwyExit", "gndIn", "taxiIn", "gateIn"].includes(ahead.state);
 
   if (P.mode === "str") {
     if (P.stage === 0) {
-      steerTo(ac, ptOnFinal(15 + P.ext, 0));
+      steerTo(ac, ptOnFinal(ac, 15 + P.ext, 0));
       if (g.along < 19 && gapOk) {
         clearIls(ac);
         P.stage = 1;
       } else if (g.along < 19 && !gapOk) {
         /* spin them out wide to build a gap */
         P.mode = "dw"; P.side = g.cross >= 0 ? 1 : (Math.random() < 0.5 ? 1 : -1); P.stage = 0;
-        const hdgOut = norm360(G.arrRwy.hdg + 180 + 60 * P.side);
+        const hdgOut = norm360((ac.rwy || G.arrRwy).hdg + 180 + 60 * P.side);
         aiSay("APP", `${ac.spoken()}, fly heading ${hdgWords(Math.round(hdgOut / 10) * 10)}, vectors for sequencing.`);
         ac.say(`Heading ${hdgWords(Math.round(hdgOut / 10) * 10)}, ${ac.spoken()}.`);
         ac.targetHdg = Math.round(hdgOut / 10) * 10; ac.directFix = null;
@@ -555,7 +587,7 @@ function aiAPP(ac) {
     }
   } else {
     if (P.stage === 0) {                        // to the downwind
-      steerTo(ac, ptOnFinal(13 + P.ext, 7 * P.side));
+      steerTo(ac, ptOnFinal(ac, 13 + P.ext, 7 * P.side));
       ac.targetIas = Math.min(ac.targetIas, 230);
       if (Math.abs(g.along - (13 + P.ext)) < 2.5 && Math.abs(Math.abs(g.cross) - 7) < 2.5) {
         P.stage = 1;
@@ -567,13 +599,13 @@ function aiAPP(ac) {
     } else if (P.stage === 1) {                 // base when the gap exists
       if (gapOk) {
         P.stage = 2;
-        steerTo(ac, ptOnFinal(15 + P.ext, 2 * P.side));
+        steerTo(ac, ptOnFinal(ac, 15 + P.ext, 2 * P.side));
       } else {
-        steerTo(ac, ptOnFinal(17 + P.ext + 4, 7 * P.side));   // extend downwind
+        steerTo(ac, ptOnFinal(ac, 17 + P.ext + 4, 7 * P.side));   // extend downwind
         P.ext = Math.min(P.ext + 0.15, 8);
       }
     } else if (P.stage === 2) {
-      steerTo(ac, ptOnFinal(15 + P.ext, 2 * P.side));
+      steerTo(ac, ptOnFinal(ac, 15 + P.ext, 2 * P.side));
       if (Math.abs(g.cross) < 3.2) { clearIls(ac); P.stage = 3; }
     }
   }
@@ -595,8 +627,8 @@ function seqLeader(ac) {
   }
   return null;
 }
-function ptOnFinal(along, cross) {
-  const R = G.arrRwy;
+function ptOnFinal(ac, along, cross) {
+  const R = ac.rwy || G.arrRwy;
   const b = { x: Math.sin(d2r(R.hdg + 180)), y: Math.cos(d2r(R.hdg + 180)) };
   const rp = { x: Math.cos(d2r(R.hdg)), y: -Math.sin(d2r(R.hdg)) };
   return { x: R.thr.x + b.x * along + rp.x * cross, y: R.thr.y + b.y * along + rp.y * cross };
@@ -607,9 +639,11 @@ function steerTo(ac, pt) {
   ac.turnDir = null;
 }
 function clearIls(ac) {
-  const cut = finalGeom(ac, G.arrRwy).cross > 0 ? norm360(G.arrRwy.hdg - 25) : norm360(G.arrRwy.hdg + 25);
-  aiSay("APP", `${ac.spoken()}, ${Math.round(finalGeom(ac, G.arrRwy).along)} miles from the field, turn ${finalGeom(ac, G.arrRwy).cross > 0 ? "left" : "right"} heading ${hdgWords(Math.round(cut / 10) * 10)}, maintain ${altWords(3000)} until established, cleared ILS runway ${rwyWords(G.arrRwy.id)}.`);
-  ac.say(`Heading ${hdgWords(Math.round(cut / 10) * 10)} till established, cleared ILS runway ${rwyWords(G.arrRwy.id)}, ${ac.spoken()}.`);
+  const R = ac.rwy || G.arrRwy;
+  const g = finalGeom(ac, R);
+  const cut = g.cross > 0 ? norm360(R.hdg - 25) : norm360(R.hdg + 25);
+  aiSay("APP", `${ac.spoken()}, ${Math.round(g.along)} miles from the field, turn ${g.cross > 0 ? "left" : "right"} heading ${hdgWords(Math.round(cut / 10) * 10)}, maintain ${altWords(3000)} until established, cleared ILS runway ${rwyWords(R.id)}.`);
+  ac.say(`Heading ${hdgWords(Math.round(cut / 10) * 10)} till established, cleared ILS runway ${rwyWords(R.id)}, ${ac.spoken()}.`);
   ac.targetHdg = Math.round(cut / 10) * 10;
   ac.turnDir = null;
   ac.assignedAlt = ac.targetAlt = Math.min(ac.targetAlt, 3000);
@@ -694,8 +728,10 @@ function stepAircraft(ac, dt) {
       ac.y -= 0.0012 * dt; // ease off the gate line
       if (ac.pushT <= 0) {
         ac.state = "taxiWait"; ac.stateT = 0;
-        ac.called = true;
-        ac.say(`${ac.spoken()}, push complete, ready to taxi.`);
+        if (!ac.monitorOnly) {
+          ac.called = true;
+          ac.say(`${ac.spoken()}, push complete, ready to taxi.`);
+        }
         if (isAI("GND")) ac.aiAt = G.t + rnd(3, 8);
         G.hooks.strips();
       }
@@ -708,7 +744,7 @@ function stepAircraft(ac, dt) {
       /* simple in-trail spacing on the ground; stopped traffic blocks too */
       for (const o of G.aircraft) {
         if (o !== ac && ["taxi", "taxiIn", "holdShortG", "holdShort"].includes(o.state) &&
-            dist2(ac, o) < 0.09 && sameDirAhead(ac, o)) return;
+            dist2(ac, o) < 0.025 && sameDirAhead(ac, o)) return;
       }
       const wp = path[ac.taxiIdx];
       const d = dist2(ac, wp);
@@ -721,7 +757,7 @@ function stepAircraft(ac, dt) {
             queueAtHoldShort(ac);
             ac.state = "holdShortG"; ac.stateT = 0;
             if (isAI("GND")) { ac.called = true; ac.aiAt = G.t + rnd(3, 8); }
-            else ac.say(`Ground, ${ac.spoken()}, holding short runway ${rwyWords(G.depRwy.id)}.`);
+            else ac.say(`Ground, ${ac.spoken()}, holding short runway ${rwyWords((ac.rwy || G.depRwy).id)}.`);
             G.hooks.strips();
           } else {
             ac.state = "gateIn"; ac.stateT = 0;
@@ -757,16 +793,18 @@ function stepAircraft(ac, dt) {
       const d = ac.ias / 3600 * dt;
       ac.x += Math.sin(d2r(ac.hdg)) * d;
       ac.y += Math.cos(d2r(ac.hdg)) * d;
-      const txIn = G.fac.taxi["in_" + G.arrRwy.id];
-      const rolled = -finalGeom(ac, G.arrRwy).along;
-      const f = { x: Math.sin(d2r(G.arrRwy.hdg)), y: Math.cos(d2r(G.arrRwy.hdg)) };
-      const exitAt = (txIn.exit.x - G.arrRwy.thr.x) * f.x + (txIn.exit.y - G.arrRwy.thr.y) * f.y;
+      const R = ac.rwy || G.arrRwy;
+      const txIn = G.fac.taxi["in_" + R.id] || G.fac.taxi["in_" + G.arrRwy.id];
+      const rolled = -finalGeom(ac, R).along;
+      const f = { x: Math.sin(d2r(R.hdg)), y: Math.cos(d2r(R.hdg)) };
+      const exitAt = txIn ? (txIn.exit.x - R.thr.x) * f.x + (txIn.exit.y - R.thr.y) * f.y : 0;
       if (ac.ias <= 32 && rolled >= exitAt - 0.05) {
-        ac.x = txIn.exit.x; ac.y = txIn.exit.y; ac.ias = 14;
+        if (txIn) { ac.x = txIn.exit.x; ac.y = txIn.exit.y; }
+        ac.ias = 14;
         ac.state = "rwyExit"; ac.stateT = 0;
         ac.called = true;
         if (isAI("TWR")) ac.aiAt = G.t + rnd(2, 5);
-        else ac.say(`Tower, ${ac.spoken()}, clear of runway ${rwyWords(G.arrRwy.id)}.`);
+        else ac.say(`Tower, ${ac.spoken()}, clear of runway ${rwyWords(R.id)}.`);
         G.hooks.strips();
       }
       return;
@@ -799,15 +837,16 @@ function sameDirAhead(ac, o) {
 function flightStep(ac, dt) {
   /* lateral */
   if (ac.app === "established") {
-    const g = finalGeom(ac, G.arrRwy);
-    ac.targetHdg = norm360(G.arrRwy.hdg - clamp(g.cross * 20, -30, 30));
+    const R = ac.rwy || G.arrRwy;
+    const g = finalGeom(ac, R);
+    ac.targetHdg = norm360(R.hdg - clamp(g.cross * 20, -30, 30));
     ac.turnDir = null;
   } else if (ac.directFix) {
     if (dist2(ac, ac.directFix) < 1.5) ac.directFix = null;   // fix passage: hold heading
     else { ac.targetHdg = bearingTo(ac, ac.directFix); ac.turnDir = null; }
   }
   let tgtH = ac.targetHdg;
-  if (ac.role === "dep" && ac.alt < 400) tgtH = G.depRwy.hdg;
+  if (ac.role === "dep" && ac.alt < 400) tgtH = (ac.rwy || G.depRwy).hdg;
   const rate = (ac.ias > 250 ? 2.1 : 3.0) * dt;
   let diff = angDiff(tgtH, ac.hdg);
   if (ac.turnDir === "L" && diff > 0) diff -= 360;
@@ -817,9 +856,10 @@ function flightStep(ac, dt) {
 
   /* ILS capture */
   if (ac.app === "cleared") {
-    const g = finalGeom(ac, G.arrRwy);
+    const R = ac.rwy || G.arrRwy;
+    const g = finalGeom(ac, R);
     if (g.along > 1 && g.along < 26 && Math.abs(g.cross) < 1.3 &&
-        Math.abs(angDiff(G.arrRwy.hdg, ac.hdg)) < 100) {
+        Math.abs(angDiff(R.hdg, ac.hdg)) < 100) {
       ac.app = "established";
       ac.directFix = null;
       G.hooks.strips();
@@ -829,7 +869,8 @@ function flightStep(ac, dt) {
   /* vertical & final logic */
   let vs = null;
   if (ac.app === "established") {
-    const g = finalGeom(ac, G.arrRwy);
+    const R = ac.rwy || G.arrRwy;
+    const g = finalGeom(ac, R);
     const gsA = 318 * Math.max(0, g.along - 0.15);
     vs = ac.alt > gsA + 20 ? -clamp(ac.gs() * 5.6, 600, 2300) : 0;
     ac.targetIas = g.along > 12 ? Math.min(ac.assignedSpd || 240, 240)
@@ -841,8 +882,10 @@ function flightStep(ac, dt) {
     if (g.along < 1.3) {
       for (const o of G.aircraft) {
         if (o === ac || o.remove) continue;
+        const oRwy = o.rwy || (o.role === "arr" ? G.arrRwy : G.depRwy);
+        if (oRwy.id !== R.id) continue;
         if (o.role === "arr" && o.state === "landedRoll") { doGoAround(ac, "traffic on the runway"); return; }
-        if (G.arrRwy.id === G.depRwy.id && ["lineup", "rolling"].includes(o.state)) { doGoAround(ac, "traffic on the runway"); return; }
+        if (["lineup", "rolling"].includes(o.state)) { doGoAround(ac, "traffic on the runway"); return; }
       }
     }
     if (g.along <= 0.35 && ac.alt <= 160) { touchdown(ac); return; }
@@ -875,7 +918,7 @@ function flightStep(ac, dt) {
     ac.say(`${ac.spoken()}, passing ${altWords(Math.round(ac.alt / 100) * 100)}, switch to departure?`);
   }
   if (ac.role === "arr" && ac.owner === "APP" && G.playerPos === "APP" &&
-      ac.app === "established" && finalGeom(ac, G.arrRwy).along < 6 && !ac.nagTwr) {
+      ac.app === "established" && finalGeom(ac, ac.rwy || G.arrRwy).along < 6 && !ac.nagTwr) {
     ac.nagTwr = true;
     ac.say(`${ac.spoken()} is established, over to tower?`);
   }
@@ -894,10 +937,13 @@ function doGoAround(ac, why) {
   ac.landClr = false;
   ac.gaFlag = false;
   ac.assignedAlt = ac.targetAlt = 3000;
-  ac.targetHdg = G.arrRwy.hdg; ac.turnDir = null;
+  ac.targetHdg = (ac.rwy || G.arrRwy).hdg; ac.turnDir = null;
   ac.assignedSpd = null; ac.targetIas = 190;
   G.counters.ga++;
   ac.say(`${ac.spoken()} is going around${why ? ", " + why : ""}.`);
+  
+  const wasTwr = ac.state === "twrArr";
+
   if (ac.state === "twrArr") {
     /* tower sends them back to approach */
     if (isAI("TWR")) aiSay("TWR", `${ac.spoken()}, roger, fly runway heading, climb three thousand, contact approach.`);
@@ -911,11 +957,24 @@ function doGoAround(ac, why) {
     const i = G.arrSeq.indexOf(ac.id);
     if (i !== -1) G.arrSeq.splice(i, 1);
   }
-  if (["TWR", "APP"].includes(G.playerPos)) addPoints(-15, `${ac.cs} went around (${why})`);
+  
+  if (["TWR", "APP"].includes(G.playerPos)) {
+    let unfair = false;
+    if (G.playerPos === "TWR" && wasTwr && why === "traffic on the runway") {
+      const R = ac.rwy || G.arrRwy;
+      const arrBlocker = G.aircraft.some(o => o !== ac && o.role === "arr" && o.state === "landedRoll" && (o.rwy || G.arrRwy).id === R.id);
+      if (arrBlocker) unfair = true;
+    }
+    if (unfair) {
+      addPoints(0, `Penalty waived: ${ac.cs} go-around due to tight AI spacing`);
+    } else {
+      addPoints(-15, `${ac.cs} went around (${why})`);
+    }
+  }
 }
 
 function touchdown(ac) {
-  const R = G.arrRwy;
+  const R = ac.rwy || G.arrRwy;
   ac.state = "landedRoll"; ac.stateT = 0;
   ac.alt = 0;
   ac.hdg = ac.targetHdg = R.hdg;
@@ -928,7 +987,7 @@ function touchdown(ac) {
   const i = G.arrSeq.indexOf(ac.id);
   if (i !== -1) G.arrSeq.splice(i, 1);
   if (G.playerPos === "TWR") addPoints(ac.landClr ? 8 : 2, `${ac.cs} landed${ac.landClr ? "" : " (never cleared!)"}`);
-  xmit("TWR", "SYS", "sys", `${ac.cs} down runway ${G.arrRwy.id}.`, null);
+  xmit("TWR", "SYS", "sys", `${ac.cs} down runway ${R.id}.`, null);
   G.hooks.strips();
 }
 
@@ -1091,13 +1150,13 @@ function matchCallsign(s) {
         (a.owner === G.playerPos || !G.playerPos) &&
         (!letters || a.airline.code.toLowerCase().startsWith(letters[0]) ||
                      a.airline.tel.toLowerCase().startsWith(letters[0])));
-      if (cand.length === 1) { best = cand[0]; bestSpan = [i, i]; break; }
+      if (cand.length === 1) { best = cand[0]; bestSpan = [i, i]; bestStart = i; break; }
     }
   }
-  if (!best) return [null, s];
+  if (!best) return [null, s, -1];
   const rem = toks.filter((_, k) => k < bestSpan[0] || k > bestSpan[1]).join(" ")
     .replace(/\bheavy\b/, " ").replace(/\s+/g, " ").trim();
-  return [best, rem];
+  return [best, rem, bestStart];
 }
 
 const CMD_PATTERNS = [
@@ -1113,7 +1172,7 @@ const CMD_PATTERNS = [
   { t: "rns",   re: /\bresume\s+normal\s+speed\b|\brns\b/,                           f: () => ({}) },
   { t: "dvs",   re: /\bdescend\s+via\b(?:\s+the)?(?:\s+\w+)?|\bdvs\b/,               f: () => ({}) },
   { t: "dct",   re: /\b(?:proceed\s+direct(?:\s+to)?|direct|dct|pd)\s+([a-z]{2,6})\b/, f: m => ({ fix: m[1].toUpperCase() }) },
-  { t: "ils",   re: /\bcleared\s+(?:for\s+)?(?:the\s+)?ils\b[\w\s]*?|\bcleared\s+approach\b|\bils\b/, f: () => ({}) },
+  { t: "ils",   re: /\bcleared\s+(?:for\s+)?(?:the\s+)?ils\b(?:(?:\s+approach)?\s+runway\s+(\d{1,2}[lrc]?))?|\bcleared\s+approach\b|\bils\b(?:\s+(\d{1,2}[lrc]?))?/, f: m => ({ rwy: (m[1] || m[2] || "").toUpperCase() }) },
   { t: "rbbad", re: /\bread\s?back\s+(?:incorrect|is\s+incorrect|not\s+correct|wrong)\b|\bnegative\s+read\s?back\b/, f: () => ({}) },
   { t: "rbok",  re: /\bread\s?back\s+(?:is\s+)?correct\b|\brbc\b|\bcorrect\s+read\s?back\b/, f: () => ({}) },
   { t: "push",  re: /\bpush(?:back)?\s+approved\b|\bpa\b/,                           f: () => ({}) },
@@ -1123,10 +1182,10 @@ const CMD_PATTERNS = [
   { t: "giveway", re: /\bgive\s+way\s+to\s+(?:the\s+)?([a-z0-9]+(?:\s+[a-z0-9]+){0,3}?)\s*(?:,|$|(?=\bthen\b)|(?=\band\b))/, f: m => ({ who: m[1].trim() }) },
   { t: "expect", re: /\bexpect\s+(?:runway\s+)?(\d{1,2}[lrc]?)\b/,                    f: m => ({ rwy: m[1].toUpperCase() }) },
   { t: "cont",  re: /\bcontinue(?:\s+taxi)?\b/,                                      f: () => ({}) },
-  { t: "taxi",  re: /\btaxi\b(?:\s+to)?(?:\s+runway)?(?:\s+\d+[lrc]?)?(?:\s+via[\w\s]*)?|\btx\b/, f: () => ({}) },
-  { t: "luaw",  re: /\bline\s+up\s+and\s+wait\b|\bluaw\b/,                           f: () => ({}) },
-  { t: "cto",   re: /\bcleared\s+for\s+takeoff\b(?:\s+runway)?(?:\s+\d+[lrc]?)?|\bcto\b/, f: () => ({}) },
-  { t: "ctl",   re: /\bcleared\s+to\s+land\b(?:\s+runway)?(?:\s+\d+[lrc]?)?|\bctl\b/, f: () => ({}) },
+  { t: "taxi",  re: /\btaxi\b(?:\s+to)?(?:\s+runway\s+(\d{1,2}[lrc]?))?(?:\s+via[\w\s]*)?|\btx\b(?:\s+(\d{1,2}[lrc]?))?/, f: m => ({ rwy: (m[1] || m[2] || "").toUpperCase() }) },
+  { t: "luaw",  re: /\bline\s+up\s+and\s+wait\b(?:\s+runway\s+(\d{1,2}[lrc]?))?|\bluaw\b(?:\s+(\d{1,2}[lrc]?))?/, f: m => ({ rwy: (m[1] || m[2] || "").toUpperCase() }) },
+  { t: "cto",   re: /\bcleared\s+for\s+takeoff\b(?:\s+runway\s+(\d{1,2}[lrc]?))?|\bcto\b(?:\s+(\d{1,2}[lrc]?))?/, f: m => ({ rwy: (m[1] || m[2] || "").toUpperCase() }) },
+  { t: "ctl",   re: /\bcleared\s+to\s+land\b(?:\s+runway\s+(\d{1,2}[lrc]?))?|\bctl\b(?:\s+(\d{1,2}[lrc]?))?/, f: m => ({ rwy: (m[1] || m[2] || "").toUpperCase() }) },
   { t: "ga",    re: /\bgo\s+around\b|\bga\b/,                                        f: () => ({}) },
   { t: "toTwr", re: /\b(?:contact|monitor|call|over\s+to|switch\s+to)\s+tower\b(?:\s+\d+)?|\btower\s+when\s+ready\b|\bct\b/, f: () => ({}) },
   { t: "toGnd", re: /\b(?:contact|monitor|call|over\s+to|switch\s+to)\s+ground\b(?:\s+\d+)?|\bground\s+when\s+ready\b|\bcg\b/, f: () => ({}) },
@@ -1335,7 +1394,7 @@ function execOps(ac, ops) {
       case "spd": {
         if (op.val < 140 || op.val > 340) { unable.push("that speed"); break; }
         ac.assignedSpd = op.val;
-        if (!(ac.app === "established" && finalGeom(ac, G.arrRwy).along < 6)) ac.targetIas = op.val;
+        if (!(ac.app === "established" && finalGeom(ac, ac.rwy || G.arrRwy).along < 6)) ac.targetIas = op.val;
         parts.push(`speed ${numWords(op.val)}`);
         break;
       }
@@ -1361,13 +1420,18 @@ function execOps(ac, ops) {
       case "ils": {
         if (ac.role !== "arr" || !["appCtl", "ctrArr"].includes(ac.state)) { unable.push("the approach"); break; }
         if (ac.alt > 6500) { unable.push("the approach, we're too high"); break; }
-        if (finalGeom(ac, G.arrRwy).along > 36) { unable.push("the approach, too far out"); break; }
+        const iRwy = op.rwy ? resolveRwy(op.rwy) : (ac.rwy || G.arrRwy);
+        if (!iRwy) { unable.push(`runway ${op.rwy}`); break; }
+        if (finalGeom(ac, iRwy).along > 36) { unable.push("the approach, too far out"); break; }
+        ac.rwy = iRwy;
         ac.app = "cleared";
-        parts.push(`cleared ILS runway ${rwyWords(G.arrRwy.id)}`);
+        parts.push(`cleared ILS runway ${rwyWords(iRwy.id)}`);
         break;
       }
       case "push": {
         if (ac.role !== "dep" || ac.state !== "gndCall") { unable.push("pushback"); break; }
+        const held = tmuHold(ac);
+        if (held) { unable.push(`pushback, holding for ${held}`); break; }
         parts.push("pushback approved");
         startPush(ac);
         break;
@@ -1375,12 +1439,26 @@ function execOps(ac, ops) {
       case "taxi": {
         if (ac.role === "dep" && ["taxiWait", "push"].includes(ac.state)) {
           if (ac.state === "push") { ac.pushT = 0; ac.state = "taxiWait"; }
-          parts.push(`runway ${rwyWords(G.depRwy.id)} via ${G.fac.taxi[G.depRwy.id].names}, hold short`);
+          const tRwy = op.rwy ? resolveRwy(op.rwy) : (ac.rwy || G.depRwy);
+          if (!tRwy) { unable.push(`runway ${op.rwy}`); break; }
+          if (typeof isRwyClosed === "function" && isRwyClosed(tRwy.id)) {
+            unable.push(`taxi, runway ${rwyWords(tRwy.id)} is closed`); break;
+          }
+          if (!G.fac.taxi[tRwy.id]) { unable.push(`taxi route to runway ${rwyWords(tRwy.id)}`); break; }
+          ac.rwy = tRwy;
+          parts.push(`runway ${rwyWords(tRwy.id)} via ${G.fac.taxi[tRwy.id].names}, hold short`);
           startTaxi(ac);
         } else if (ac.role === "arr" && ac.state === "gndIn") {
-          parts.push(`taxi to the gate via ${G.fac.taxi["in_" + G.arrRwy.id].names}`);
+          parts.push(`taxi to the gate via ${G.fac.taxi["in_" + (ac.rwy || G.arrRwy).id].names}`);
           startTaxiIn(ac);
         } else unable.push("taxi");
+        break;
+      }
+      case "expect": {
+        const eRwy = resolveRwy(op.rwy);
+        if (!eRwy) { unable.push(`runway ${op.rwy}`); break; }
+        ac.rwy = eRwy;
+        parts.push(`expect runway ${rwyWords(eRwy.id)}`);
         break;
       }
       case "hold":
@@ -1412,28 +1490,30 @@ function execOps(ac, ops) {
         ac.standbyAt = G.t; ac.standbyDur = 240;
         parts.push(`giving way to the ${op.who}`);
         break;
-      case "expect":
-        ac.expectRwy = op.rwy;
-        parts.push(`expect runway ${rwyWords(op.rwy)}`);
-        break;
       case "cont":
         if (ac.holdFlag) {
           ac.holdFlag = false; ac.giveWayTo = null;
           parts.push("continue taxi");
         } else unable.push("continue");
         break;
-      case "luaw":
+      case "luaw": {
         if (ac.role !== "dep" || ac.state !== "holdShort") { unable.push("line up"); break; }
-        if (typeof isRwyClosed === "function" && isRwyClosed(G.depRwy.id)) {
-          unable.push(`line up, runway ${rwyWords(G.depRwy.id)} is closed`); break;
+        const lRwy = op.rwy ? resolveRwy(op.rwy) : (ac.rwy || G.depRwy);
+        if (!lRwy) { unable.push(`runway ${op.rwy}`); break; }
+        if (typeof isRwyClosed === "function" && isRwyClosed(lRwy.id)) {
+          unable.push(`line up, runway ${rwyWords(lRwy.id)} is closed`); break;
         }
+        ac.rwy = lRwy;
         ac.state = "lineup"; ac.stateT = 0;
-        ac.x = G.depRwy.thr.x; ac.y = G.depRwy.thr.y; ac.hdg = G.depRwy.hdg;
-        parts.push(`line up and wait runway ${rwyWords(G.depRwy.id)}`);
+        ac.x = lRwy.thr.x; ac.y = lRwy.thr.y; ac.hdg = lRwy.hdg;
+        parts.push(`line up and wait runway ${rwyWords(lRwy.id)}`);
         G.hooks.strips();
         break;
+      }
       case "cto": {
         if (ac.role !== "dep" || !["holdShort", "lineup"].includes(ac.state)) { unable.push("takeoff"); break; }
+        const cRwy = op.rwy ? resolveRwy(op.rwy) : (ac.rwy || G.depRwy);
+        if (!cRwy) { unable.push(`runway ${op.rwy}`); break; }
         const held = tmuHold(ac);
         if (held) { unable.push(`takeoff, we're holding for ${held}`); break; }
         if (ac.releaseHold && G.t < ac.releaseHold) {
@@ -1441,18 +1521,23 @@ function execOps(ac, ops) {
           unable.push(`takeoff, departure is holding our release another ${numWords(mm)} minute${mm === 1 ? "" : "s"}`);
           break;
         }
-        if (typeof isRwyClosed === "function" && isRwyClosed(G.depRwy.id)) {
-          unable.push(`takeoff, runway ${rwyWords(G.depRwy.id)} is closed`); break;
+        if (typeof isRwyClosed === "function" && isRwyClosed(cRwy.id)) {
+          unable.push(`takeoff, runway ${rwyWords(cRwy.id)} is closed`); break;
         }
-        parts.push(`cleared for takeoff runway ${rwyWords(G.depRwy.id)}`);
+        ac.rwy = cRwy;
+        parts.push(`cleared for takeoff runway ${rwyWords(cRwy.id)}`);
         startRoll(ac);
         break;
       }
-      case "ctl":
+      case "ctl": {
         if (ac.role !== "arr" || !["twrArr", "appCtl"].includes(ac.state)) { unable.push("landing clearance"); break; }
+        const aRwy = op.rwy ? resolveRwy(op.rwy) : (ac.rwy || G.arrRwy);
+        if (!aRwy) { unable.push(`runway ${op.rwy}`); break; }
+        ac.rwy = aRwy;
         ac.landClr = true;
-        parts.push(`cleared to land runway ${rwyWords(G.arrRwy.id)}`);
+        parts.push(`cleared to land runway ${rwyWords(aRwy.id)}`);
         break;
+      }
       case "ga":
         if (ac.role !== "arr" || ac.alt < 150 || !["appCtl", "twrArr"].includes(ac.state)) { unable.push("the go-around"); break; }
         doGoAround(ac, "");
@@ -1560,10 +1645,16 @@ function playerTransmit(raw) {
     return;
   }
 
-  let [ac, rest] = matchCallsign(norm);
+  let [ac, rest, startIdx] = matchCallsign(norm);
+  if (G.selected && !G.selected.remove) {
+    if (!ac || (ac !== G.selected && startIdx > 0)) {
+      ac = G.selected;
+      rest = norm;
+    }
+  }
+
   if (!ac) {
-    if (G.selected && !G.selected.remove) { ac = G.selected; rest = norm; }
-    else { sysLog("Nobody answered. Address a callsign, or click a strip/target first."); return; }
+    sysLog("Nobody answered. Address a callsign, or click a strip/target first."); return;
   }
   G.selected = ac;
   G.hooks.strips();
@@ -1713,17 +1804,17 @@ function pilotRequest(ac) {
     case "push": return "we're still pushing back";
     case "taxiWait": return "we're ready to taxi";
     case "taxi": case "taxiIn": return "we're taxiing";
-    case "holdShortG": case "holdShort": return `we're holding short runway ${rwyWords(G.depRwy.id)}, ready to go`;
+    case "holdShortG": case "holdShort": return `we're holding short runway ${rwyWords((ac.rwy || G.depRwy).id)}, ready to go`;
     case "lineup": return "we're lined up and waiting";
     case "rolling": return "we're rolling";
     case "climb": case "depCtl": return `we're climbing to ${altWords(ac.assignedAlt || G.fac.initAlt)}`;
     case "ctrDep": return `we're headed for ${ac.exitFix.name}`;
     case "ctrArr": return `we're descending on the ${ac.star}`;
     case "appCtl":
-      return ac.app === "established" ? `we're established on the ILS runway ${rwyWords(G.arrRwy.id)}`
+      return ac.app === "established" ? `we're established on the ILS runway ${rwyWords((ac.rwy || G.arrRwy).id)}`
            : ac.app === "cleared" ? "we're cleared for the approach, looking for the localizer"
            : "we're looking for vectors to the final";
-    case "twrArr": return ac.landClr ? `we're cleared to land ${rwyWords(G.arrRwy.id)}`
+    case "twrArr": return ac.landClr ? `we're cleared to land ${rwyWords((ac.rwy || G.arrRwy).id)}`
                                      : "we're on final, need a landing clearance";
     case "landedRoll": return "we're rolling out";
     case "rwyExit": case "gndIn": return "we're clear of the runway, need taxi to the gate";
@@ -1810,6 +1901,9 @@ function tmuRoll() {
     tmuSay(`Traffic management: ${miles} miles in trail over ${fx.name}, effective now.`);
   } else if (roll < 0.8 && !TMU.gdp) {
     TMU.gdp = { until: G.t + rnd(900, 1800) };
+    for (const a of G.aircraft) {
+      if (a.role === "dep" && !TMU.edct.has(a.cs)) TMU.edct.set(a.cs, G.t + rnd(120, 600));
+    }
     tmuSay("Traffic management: ground delay programme in effect. Departures will be issued wheels-up times.");
   }
 }
@@ -1819,11 +1913,12 @@ function tmuHold(ac) {
     return `a ground stop for ${TMU.groundStop.dest}`;
   }
   if (TMU.gdp && ac.role === "dep") {
-    if (!TMU.edct.has(ac.cs)) TMU.edct.set(ac.cs, G.t + rnd(120, 600));
-    const t = TMU.edct.get(ac.cs);
-    if (G.t < t) {
-      const mm = Math.max(1, Math.round((t - G.t) / 60));
-      return `a wheels-up time, ${mm} minute${mm === 1 ? "" : "s"} from now`;
+    if (TMU.edct.has(ac.cs)) {
+      const t = TMU.edct.get(ac.cs);
+      if (G.t < t) {
+        const mm = Math.max(1, Math.round((t - G.t) / 60));
+        return `a wheels-up time, ${mm} minute${mm === 1 ? "" : "s"} from now`;
+      }
     }
   }
   return null;
@@ -1844,11 +1939,11 @@ function coordinationTick() {
   /* about to launch with an arrival close in: approach coordinates */
   if (P === "TWR" || P === "GND") {
     const inbound = G.aircraft.find(a => a.role === "arr" && a.app === "established" &&
-      finalGeom(a, G.arrRwy).along < 9 && finalGeom(a, G.arrRwy).along > 3);
+      finalGeom(a, ac.rwy || G.arrRwy).along < 9 && finalGeom(a, ac.rwy || G.arrRwy).along > 3);
     const ready = G.aircraft.filter(a => a.role === "dep" &&
       ["holdShort", "holdShortG", "lineup"].includes(a.state));
     if (inbound && ready.length && Math.random() < 0.7) {
-      const mi = Math.round(finalGeom(inbound, G.arrRwy).along);
+      const mi = Math.round(finalGeom(inbound, ac.rwy || G.arrRwy).along);
       landlineChime();
       xmit("INT", ctrlCallsign("APP"), "ctrl",
         pick([
@@ -1932,6 +2027,8 @@ const LL_REQUESTS = {
   status:   { label: "how's it looking",       to: p => p },
   apreq:    { label: "APREQ / call for release", to: () => "APP" },
   cross:    { label: "request runway crossing", to: () => "TWR" },
+  space_arr:{ label: "request increased arrival spacing", to: () => "APP" },
+  tighten_arr:{ label: "request reduced arrival spacing", to: () => "APP" },
   pointout: { label: "point out (selected)",   to: p => p },
   handoff:  { label: "coordinate handoff (selected)", to: p => p },
   traffic:  { label: "traffic call (selected)", to: p => p },
@@ -1952,6 +2049,8 @@ function intercom(pos, action) {
                : `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, APREQ on my next departure.`,
     cross: sel ? `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, request to cross runway ${G.depRwy.id} with ${sel.cs}.`
                : `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, request a runway crossing.`,
+    space_arr: `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, we need more room between arrivals.`,
+    tighten_arr: `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, you can tighten up the final.`,
     pointout: sel ? `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, point out, ${sel.cs}, ${Math.round(sel.distField())} miles, ${sel.alt > 100 ? Math.round(sel.alt / 100) * 100 + " feet" : "on the ground"}.`
                   : `${POS_NAME[pos]}, point out.`,
     handoff: sel ? `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, you got ${sel.cs}?`
@@ -1991,6 +2090,12 @@ function intercom(pos, action) {
     reply = pick(["Approved, cross at your discretion.", "Cross behind the landing traffic, then approved.",
                   "Hold him, I've got one on a two mile final.", "Approved as requested."]);
     effect = /Hold/.test(reply) ? "hold" : "release";
+  } else if (action === "space_arr") {
+    G.arrSpacing = Math.min((G.arrSpacing || 6.5) + 2.5, 15);
+    reply = `Roger, stretching the final to ${G.arrSpacing} miles in trail.`;
+  } else if (action === "tighten_arr") {
+    G.arrSpacing = Math.max((G.arrSpacing || 6.5) - 2.5, 4);
+    reply = `Roger, tightening the final to ${G.arrSpacing} miles in trail.`;
   } else if (action === "pointout") {
     if (sel) { sel.pointedOut = pos; addPoints(3, `point out on ${sel.cs} approved by ${pos}`); }
     reply = pick(["Point out approved, you keep him.", "Radar contact, approved, my traffic is no factor.",
@@ -2120,6 +2225,7 @@ function spawnDep(delay = 0) {
   if (G.aircraft.some(o => o.cs === ac.cs)) return;
   ac.callAt = G.t + rnd(4, 20) + delay;
   G.aircraft.push(ac);
+  if (typeof TMU !== "undefined" && TMU.gdp && !TMU.edct.has(ac.cs)) TMU.edct.set(ac.cs, G.t + rnd(120, 600));
   G.hooks.strips();
 }
 function spawnArr() {

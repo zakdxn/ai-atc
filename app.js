@@ -157,6 +157,10 @@ function stripHtml(ac, mine) {
     ? `<span class="ho ${ac.hoAccepted ? "ok" : "pend"}">H/O ${ac.hoTo}${ac.hoAccepted ? " ✓" : " …"}</span>`
     : "";
   const nxt = nextPosFor(ac);
+  
+  const edctStr = (typeof TMU !== "undefined" && TMU.edct.has(ac.cs) && G.t < TMU.edct.get(ac.cs)) 
+    ? `<div class="fs-rte" style="color:var(--orange)"><i>EDCT</i>${fmtClock(TMU.edct.get(ac.cs))}</div>` : "";
+
   return `<div class="fstrip ${ac.role}${sel}" data-id="${ac.id}">
     <div class="fs-hd"><span class="cs">${ac.cs}</span><span class="cid">${ac.cid}</span>${
       ac.emerg ? `<span class="ho pend">${ac.emerg.id === "nordo" ? "NORDO" : "EMERG"}</span>` : ""}${ho}</div>
@@ -173,6 +177,7 @@ function stripHtml(ac, mine) {
     </div>
     <div class="fs-rte"><i>RTE</i>${ac.route || ""}</div>
     ${ac.rmk ? `<div class="fs-rte"><i>RMK</i>${ac.rmk}</div>` : ""}
+    ${edctStr}
     <div class="fs-ft">
       <span class="st">${stateLabel(ac)} · ${alt}→${asg}${ac.role === "dep" ? " · gate " + ac.gate : ""}</span>
       ${nxt ? `<button class="hobtn" data-ho="${ac.id}" title="Flash this strip to ${nxt} (handoff)">H/O ${nxt}</button>` : ""}
