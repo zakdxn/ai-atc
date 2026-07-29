@@ -1650,7 +1650,12 @@ function playerTransmit(raw) {
     if (targetPos && targetPos !== G.playerPos) {
        const msg = icMatch[2];
        let handled = false;
-       if (/\b(?:more|increase|space|spacing|stretch|room|back\s+up)\b/.test(msg)) {
+       
+       const milesMatch = msg.match(/\b(\d{1,2})\s*(?:miles|in\s*trail)\b/);
+       if (milesMatch) {
+         intercom(targetPos, `space_arr:${milesMatch[1]}`);
+         handled = true;
+       } else if (/\b(?:more|increase|space|spacing|stretch|room|back\s+up)\b/.test(msg)) {
          intercom(targetPos, "space_arr");
          handled = true;
        } else if (/\b(?:tighten|reduce|closer|less)\b/.test(msg)) {
@@ -2091,6 +2096,11 @@ const LL_REQUESTS = {
 
 function intercom(pos, action) {
   if (pos === G.playerPos) return;
+  let actKey = action, actParam = null;
+  if (action && action.includes(":")) {
+    [actKey, actParam] = action.split(":");
+  }
+
   const me = ctrlCallsign(G.playerPos), them = ctrlCallsign(pos);
   const sel = G.selected && !G.selected.remove ? G.selected : null;
   const mine = G.aircraft.filter(a => a.owner === pos && !a.remove);
@@ -2103,7 +2113,8 @@ function intercom(pos, action) {
                : `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, APREQ on my next departure.`,
     cross: sel ? `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, request to cross runway ${G.depRwy.id} with ${sel.cs}.`
                : `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, request a runway crossing.`,
-    space_arr: `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, we need more room between arrivals.`,
+    space_arr: actParam ? `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, we need ${actParam} miles between arrivals.`
+                        : `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, we need more room between arrivals.`,
     tighten_arr: `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, you can tighten up the final.`,
     pointout: sel ? `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, point out, ${sel.cs}, ${Math.round(sel.distField())} miles, ${sel.alt > 100 ? Math.round(sel.alt / 100) * 100 + " feet" : "on the ground"}.`
                   : `${POS_NAME[pos]}, point out.`,
@@ -2112,13 +2123,13 @@ function intercom(pos, action) {
     traffic: sel ? `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, traffic, ${sel.cs}, ${Math.round(sel.distField())} out.`
                  : `${POS_NAME[pos]}, traffic call.`,
     restrict: `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, anything you need on my departures?`,
-  }[action] || `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}.`;
+  }[actKey] || `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}.`;
   xmit("INT", me, "you", ask, null);
 
   /* what they say back, built from their real picture */
   let reply, effect = null;
   const busy = mine.length;
-  if (action === "status") {
+  if (actKey === "status") {
     const detail = {
       DEL: () => `${mine.filter(a => a.clxStage < 3).length} still waiting on clearances`,
       GND: () => `${mine.filter(a => ["taxi", "push"].includes(a.state)).length} moving`,
@@ -2128,7 +2139,7 @@ function intercom(pos, action) {
     }[pos]();
     reply = busy > 5 ? `Slammed. ${cap(detail)}. Give me a minute.`
           : busy ? `${cap(detail)}, manageable.` : "Quiet, go ahead.";
-  } else if (action === "apreq") {
+  } else if (actKey === "apreq") {
     const wait = Math.random();
     if (wait < 0.45) { reply = "Released, no restriction."; effect = "release"; }
     else if (wait < 0.8) {
@@ -2140,29 +2151,33 @@ function intercom(pos, action) {
       reply = `Released, but I need heading ${hdgWords(hdg)} off the runway.`;
       effect = "heading:" + hdg;
     }
-  } else if (action === "cross") {
+  } else if (actKey === "cross") {
     reply = pick(["Approved, cross at your discretion.", "Cross behind the landing traffic, then approved.",
                   "Hold him, I've got one on a two mile final.", "Approved as requested."]);
     effect = /Hold/.test(reply) ? "hold" : "release";
-  } else if (action === "space_arr") {
-    G.arrSpacing = Math.min((G.arrSpacing || 6.5) + 3.0, 30);
+  } else if (actKey === "space_arr") {
+    if (actParam) {
+      G.arrSpacing = Math.min(Math.max(+actParam, 4), 30);
+    } else {
+      G.arrSpacing = Math.min((G.arrSpacing || 6.5) + 3.0, 30);
+    }
     reply = `Roger, stretching the final to ${G.arrSpacing} miles in trail.`;
-  } else if (action === "tighten_arr") {
+  } else if (actKey === "tighten_arr") {
     G.arrSpacing = Math.max((G.arrSpacing || 6.5) - 2.5, 4);
     reply = `Roger, tightening the final to ${G.arrSpacing} miles in trail.`;
-  } else if (action === "pointout") {
+  } else if (actKey === "pointout") {
     if (sel) { sel.pointedOut = pos; addPoints(3, `point out on ${sel.cs} approved by ${pos}`); }
     reply = pick(["Point out approved, you keep him.", "Radar contact, approved, my traffic is no factor.",
                   "Approved, but keep him at or below five thousand."]);
-  } else if (action === "handoff") {
+  } else if (actKey === "handoff") {
     if (sel) { sel.hoTo = pos; sel.hoAccepted = true; }
     reply = sel ? pick([`Got him, ship him over.`, `Radar contact on ${sel.cs}, send him.`,
                         `He's mine, go ahead and switch him.`])
                 : "Say the callsign again?";
-  } else if (action === "traffic") {
+  } else if (actKey === "traffic") {
     reply = pick(["Traffic observed, no factor.", "I see him, I'll keep mine above.",
                   "Roger, I'll take him after the one on final."]);
-  } else if (action === "restrict") {
+  } else if (actKey === "restrict") {
     const mm = pick([5, 10, 15]);
     reply = pick([`Nothing right now, run them.`, `Give me ${mm} miles in trail on the ${G.fac.sids[0].name}s.`,
                   `Keep them at or below five thousand until I call.`]);
