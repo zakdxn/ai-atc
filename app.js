@@ -223,11 +223,13 @@ function renderCheat() {
       ["readback correct", "after they read it back, if it was right"],
       ["readback incorrect", "if they busted an item"],
       ["contact ground", "when they are ready to push"],
+      ["monitor ground", "busy? they listen and wait for ground to call them"],
     ],
     GND: [
       ["pushback approved", "they are at the gate asking to push"],
       [`taxi runway ${G.depRwy.id} via ${depRoute}, hold short`, "departures. Just say \u201ctaxi\u201d and the route is filled in"],
       [`taxi to the gate via ${arrRoute}`, "arrivals off the runway"],
+      ["monitor ground, I'll call you for taxi", "STOPS THEM CALLING. You initiate taxi in your order."],
       ["number 2", "sequence them so they stop calling"],
       ["give way to the company 737, then continue", "let one pass"],
       ["hold position / continue", "stop and restart"],
@@ -276,9 +278,7 @@ function renderIntercom() {
   el.innerHTML = POSITIONS.filter(p => p !== G.playerPos)
     .map(p => `<button data-i="${p}">${p}</button>`).join("") +
     `<select id="intAct">
-      <option value="status">status check</option>
-      <option value="handoff">req handoff (selected)</option>
-      <option value="pointout">point out (selected)</option>
+      ${Object.entries(LL_REQUESTS).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join("")}
     </select>`;
   el.querySelectorAll("button").forEach(b => {
     b.onclick = () => intercom(b.dataset.i, document.getElementById("intAct").value);

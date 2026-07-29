@@ -658,7 +658,8 @@ function stepAircraft(ac, dt) {
   }
   if (!ac.called && G.t >= ac.callAt &&
       !["push", "taxi", "taxiIn", "lineup", "rolling", "landedRoll", "out", "gateIn", "clxOk", "taxiWait", "holdShortG", "rwyExit"].includes(ac.state)) {
-    if (freqBusy(ac.owner)) ac.callAt = G.t + rnd(2, 5);   // wait for a gap
+    if (ac.monitorOnly) ac.callAt = G.t + 30;              // waiting for you to call
+    else if (freqBusy(ac.owner)) ac.callAt = G.t + rnd(2, 5);
     else pilotCheckIn(ac);
   }
   /* AI controller action */
@@ -1096,6 +1097,8 @@ function matchCallsign(s) {
 }
 
 const CMD_PATTERNS = [
+  /* first: phrases that contain words other patterns would otherwise claim */
+  { t: "monitor", re: /\b(?:monitor|remain\s+this\s+frequency|(?:i'?ll|we'?ll)\s+call\s+you|expect\s+taxi\s+in\s+sequence|stand\s?by\s+for\s+taxi)\b(?:\s+(?:ground|tower|approach|departure|center|centre))?(?:\s*,?\s*(?:i'?ll|we'?ll)\s+call\s+you(?:\s+for\s+taxi)?)?/, f: () => ({}) },
   { t: "hdg",   re: /\bturn\s+(left|right)\s+(?:heading\s+)?(\d{1,3})\b/,            f: m => ({ dir: m[1][0].toUpperCase(), deg: +m[2] }) },
   { t: "hdg",   re: /\b(?:t\s+)?(l|r)\s+(?:h\s+)?(\d{1,3})\b/,                       f: m => ({ dir: m[1].toUpperCase(), deg: +m[2] }) },
   { t: "hdg",   re: /\b(?:fly\s+heading|fly\s+runway\s+heading|heading|hdg|h)\s+(\d{1,3})\b/, f: m => ({ dir: null, deg: +m[1] }) },
@@ -1112,8 +1115,8 @@ const CMD_PATTERNS = [
   { t: "push",  re: /\bpush(?:back)?\s+approved\b|\bpa\b/,                           f: () => ({}) },
   { t: "hold",  re: /\bhold\s+position\b|\bhp\b/,                                    f: () => ({}) },
   { t: "seq",   re: /\b(?:you(?:'re|\s+are)?\s+)?number\s+(\d{1,2})\b|\b#\s*(\d{1,2})\b/, f: m => ({ n: +(m[1] || m[2]) }) },
-  { t: "follow", re: /\bfollow\s+(?:the\s+)?([a-z0-9 ]{2,22}?)(?=\s*(?:,|$|then|and)\b)/, f: m => ({ who: m[1].trim() }) },
-  { t: "giveway", re: /\bgive\s+way\s+to\s+(?:the\s+)?([a-z0-9 ]{2,22}?)(?=\s*(?:,|$|then|and)\b)/, f: m => ({ who: m[1].trim() }) },
+  { t: "follow", re: /\bfollow\s+(?:the\s+)?([a-z0-9]+(?:\s+[a-z0-9]+){0,3}?)\s*(?:,|$|(?=\bthen\b)|(?=\band\b))/, f: m => ({ who: m[1].trim() }) },
+  { t: "giveway", re: /\bgive\s+way\s+to\s+(?:the\s+)?([a-z0-9]+(?:\s+[a-z0-9]+){0,3}?)\s*(?:,|$|(?=\bthen\b)|(?=\band\b))/, f: m => ({ who: m[1].trim() }) },
   { t: "expect", re: /\bexpect\s+(?:runway\s+)?(\d{1,2}[lrc]?)\b/,                    f: m => ({ rwy: m[1].toUpperCase() }) },
   { t: "cont",  re: /\bcontinue(?:\s+taxi)?\b/,                                      f: () => ({}) },
   { t: "taxi",  re: /\btaxi\b(?:\s+to)?(?:\s+runway)?(?:\s+\d+[lrc]?)?(?:\s+via[\w\s]*)?|\btx\b/, f: () => ({}) },
@@ -1143,6 +1146,10 @@ function parseCommands(s) {
     }
   }
   ops.sort((a, b) => a.at - b.at);
+  /* "monitor ground, I'll call you for taxi" is not a taxi clearance */
+  if (ops.some(o => o.t === "monitor")) {
+    for (let i = ops.length - 1; i >= 0; i--) if (ops[i].t === "taxi") ops.splice(i, 1);
+  }
   return { ops, rest: work.trim() };
 }
 
@@ -1359,7 +1366,8 @@ function execOps(ac, ops) {
         break;
       }
       case "taxi": {
-        if (ac.role === "dep" && ac.state === "taxiWait") {
+        if (ac.role === "dep" && ["taxiWait", "push"].includes(ac.state)) {
+          if (ac.state === "push") { ac.pushT = 0; ac.state = "taxiWait"; }
           parts.push(`runway ${rwyWords(G.depRwy.id)} via ${G.fac.taxi[G.depRwy.id].names}, hold short`);
           startTaxi(ac);
         } else if (ac.role === "arr" && ac.state === "gndIn") {
@@ -1373,6 +1381,13 @@ function execOps(ac, ops) {
         else if (["taxiWait", "gndCall", "clxOk", "holdShortG", "holdShort"].includes(ac.state)) {
           ac.holdFlag = true; parts.push("holding position");
         } else unable.push("hold position");
+        break;
+      case "monitor":
+        /* they listen but do not call. You initiate when you are ready. */
+        ac.monitorOnly = true;
+        ac.standbyAt = G.t; ac.standbyDur = 3600;
+        ac.reminders = 2;
+        parts.push("monitoring, we'll wait for your call");
         break;
       case "seq":
         ac.seqNum = op.n;
@@ -1414,6 +1429,11 @@ function execOps(ac, ops) {
         if (ac.role !== "dep" || !["holdShort", "lineup"].includes(ac.state)) { unable.push("takeoff"); break; }
         const held = tmuHold(ac);
         if (held) { unable.push(`takeoff, we're holding for ${held}`); break; }
+        if (ac.releaseHold && G.t < ac.releaseHold) {
+          const mm = Math.max(1, Math.round((ac.releaseHold - G.t) / 60));
+          unable.push(`takeoff, departure is holding our release another ${numWords(mm)} minute${mm === 1 ? "" : "s"}`);
+          break;
+        }
         if (typeof isRwyClosed === "function" && isRwyClosed(G.depRwy.id)) {
           unable.push(`takeoff, runway ${rwyWords(G.depRwy.id)} is closed`); break;
         }
@@ -1538,6 +1558,7 @@ function playerTransmit(raw) {
   G.selected = ac;
   G.hooks.strips();
   if (ac.owner !== G.playerPos) { sysLog(`${ac.cs} is not on your frequency (with ${ac.owner}).`); return; }
+  if (ac.monitorOnly) { ac.monitorOnly = false; ac.called = true; ac.standbyAt = 0; }
 
   /* ---- broad intent layer: pilots answer questions about themselves ----
      Anything recognisable as a question about state, position, fuel,
@@ -1876,72 +1897,110 @@ function initiateHandoff(ac) {
    Replies are generated from the position's actual traffic picture and
    drawn from phrase pools, so no two calls sound alike.
    ===================================================================== */
+/* A landline call is a short two-way exchange, not a menu lookup. The
+   caller identifies, states the request, the receiver approves, denies
+   or approves with a restriction. Requests are the ones controllers
+   actually make: approval requests for release, runway crossings,
+   point-outs, handoff coordination and traffic calls. */
+const LL_REQUESTS = {
+  status:   { label: "how's it looking",       to: p => p },
+  apreq:    { label: "APREQ / call for release", to: () => "APP" },
+  cross:    { label: "request runway crossing", to: () => "TWR" },
+  pointout: { label: "point out (selected)",   to: p => p },
+  handoff:  { label: "coordinate handoff (selected)", to: p => p },
+  traffic:  { label: "traffic call (selected)", to: p => p },
+  restrict: { label: "request a restriction",  to: () => "APP" },
+};
+
 function intercom(pos, action) {
   if (pos === G.playerPos) return;
-  landlineChime();
-  const who = ctrlCallsign(pos);
+  const me = ctrlCallsign(G.playerPos), them = ctrlCallsign(pos);
+  const sel = G.selected && !G.selected.remove ? G.selected : null;
   const mine = G.aircraft.filter(a => a.owner === pos && !a.remove);
-  const busyWord = mine.length === 0 ? pick(["dead quiet", "nothing going on", "quiet"])
-    : mine.length <= 2 ? pick(["pretty relaxed", "light", "just a couple"])
-    : mine.length <= 5 ? pick(["steady", "keeping busy", "decent push"])
-    : pick(["getting slammed", "busy as anything", "buried right now"]);
-  let reply;
+  landlineChime();
+
+  /* what you say */
+  const ask = {
+    status: `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, how's it looking?`,
+    apreq: sel ? `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, APREQ ${sel.cs} off ${G.depRwy.id} for ${sel.role === "dep" ? sel.exitFix.name : "the field"}.`
+               : `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, APREQ on my next departure.`,
+    cross: sel ? `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, request to cross runway ${G.depRwy.id} with ${sel.cs}.`
+               : `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, request a runway crossing.`,
+    pointout: sel ? `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, point out, ${sel.cs}, ${Math.round(sel.distField())} miles, ${sel.alt > 100 ? Math.round(sel.alt / 100) * 100 + " feet" : "on the ground"}.`
+                  : `${POS_NAME[pos]}, point out.`,
+    handoff: sel ? `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, you got ${sel.cs}?`
+                 : `${POS_NAME[pos]}, coordinating a handoff.`,
+    traffic: sel ? `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, traffic, ${sel.cs}, ${Math.round(sel.distField())} out.`
+                 : `${POS_NAME[pos]}, traffic call.`,
+    restrict: `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, anything you need on my departures?`,
+  }[action] || `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}.`;
+  xmit("INT", me, "you", ask, null);
+
+  /* what they say back, built from their real picture */
+  let reply, effect = null;
+  const busy = mine.length;
   if (action === "status") {
     const detail = {
-      DEL: () => {
-        const w = mine.filter(a => a.clxStage < 3).length;
-        return w ? `${w} still waiting on clearances` : "everybody's cleared";
-      },
-      GND: () => {
-        const t = mine.filter(a => ["taxi", "push"].includes(a.state)).length;
-        return t ? `${t} moving on the surface` : "nobody moving";
-      },
-      TWR: () => {
-        const hs = mine.filter(a => ["holdShort", "lineup"].includes(a.state)).length;
-        const fin = mine.filter(a => a.state === "twrArr").length;
-        return `${hs} in the queue, ${fin} on final`;
-      },
-      APP: () => {
-        const arr = mine.filter(a => a.role === "arr").length;
-        return `${arr} inbound${arr === 1 ? "" : "s"} on the scope`;
-      },
-      CTR: () => `${mine.length} in the sector`,
+      DEL: () => `${mine.filter(a => a.clxStage < 3).length} still waiting on clearances`,
+      GND: () => `${mine.filter(a => ["taxi", "push"].includes(a.state)).length} moving`,
+      TWR: () => `${mine.filter(a => ["holdShort", "lineup"].includes(a.state)).length} in the queue, ${mine.filter(a => a.state === "twrArr").length} on final`,
+      APP: () => `${mine.filter(a => a.role === "arr").length} inbound`,
+      CTR: () => `${busy} in the sector`,
     }[pos]();
-    reply = pick([
-      `${POS_NAME[pos]}, ${busyWord}, ${detail}.`,
-      `Yeah, ${busyWord} over here. ${detail.charAt(0).toUpperCase() + detail.slice(1)}.`,
-      `${who}, ${detail}, ${busyWord} otherwise.`,
-    ]);
-    if (mine.length && Math.random() < 0.5) reply += ` ${pick(["First up is", "Watching", "Next one's"])} ${mine[0].cs}.`;
-  } else if (action === "handoff" && G.selected) {
-    reply = pick([
-      `${who}, radar contact on ${G.selected.cs}, send them over when ready.`,
-      `Yeah, I see ${G.selected.cs}, ship them anytime.`,
-      `${G.selected.cs}? Approved, flash the strip.`,
-      `Take a gap and send ${G.selected.cs} across, I've got the picture.`,
-    ]);
-  } else if (action === "pointout" && G.selected) {
-    /* A point-out lets your aircraft clip the next controller's airspace
-       while you keep talking to it. They approve, you retain the track. */
-    G.selected.pointedOut = pos;
-    addPoints(3, `point out on ${G.selected.cs} approved by ${pos}`);
-    reply = pick([
-      `${who}, point out approved on ${G.selected.cs}, you keep the track.`,
-      `Point out on ${G.selected.cs}, approved, my traffic is no factor, they stay with you.`,
-      `Roger the point out, ${G.selected.cs}, radar contact, keep them on your frequency.`,
-    ]);
-  } else {
-    reply = pick([`${who}, go ahead.`, `${who}.`, `Go for ${who}.`]);
-  }
-  xmit("INT", "YOU", "you", `(landline to ${who}) ${action}${G.selected ? " " + G.selected.cs : ""}`, null);
-  setTimeout(() => xmit("INT", who, "ctrl", reply, G.ctrlVoice[pos]), 700);
+    reply = busy > 5 ? `Slammed. ${cap(detail)}. Give me a minute.`
+          : busy ? `${cap(detail)}, manageable.` : "Quiet, go ahead.";
+  } else if (action === "apreq") {
+    const wait = Math.random();
+    if (wait < 0.45) { reply = "Released, no restriction."; effect = "release"; }
+    else if (wait < 0.8) {
+      const mm = Math.floor(rnd(2, 7));
+      reply = `Hold him, I've got a stream. Call me in ${mm}.`;
+      effect = "hold";
+    } else {
+      const hdg = Math.round(rnd(1, 36)) * 10;
+      reply = `Released, but I need heading ${hdgWords(hdg)} off the runway.`;
+      effect = "heading:" + hdg;
+    }
+  } else if (action === "cross") {
+    reply = pick(["Approved, cross at your discretion.", "Cross behind the landing traffic, then approved.",
+                  "Hold him, I've got one on a two mile final.", "Approved as requested."]);
+    effect = /Hold/.test(reply) ? "hold" : "release";
+  } else if (action === "pointout") {
+    if (sel) { sel.pointedOut = pos; addPoints(3, `point out on ${sel.cs} approved by ${pos}`); }
+    reply = pick(["Point out approved, you keep him.", "Radar contact, approved, my traffic is no factor.",
+                  "Approved, but keep him at or below five thousand."]);
+  } else if (action === "handoff") {
+    if (sel) { sel.hoTo = pos; sel.hoAccepted = true; }
+    reply = sel ? pick([`Got him, ship him over.`, `Radar contact on ${sel.cs}, send him.`,
+                        `He's mine, go ahead and switch him.`])
+                : "Say the callsign again?";
+  } else if (action === "traffic") {
+    reply = pick(["Traffic observed, no factor.", "I see him, I'll keep mine above.",
+                  "Roger, I'll take him after the one on final."]);
+  } else if (action === "restrict") {
+    const mm = pick([5, 10, 15]);
+    reply = pick([`Nothing right now, run them.`, `Give me ${mm} miles in trail on the ${G.fac.sids[0].name}s.`,
+                  `Keep them at or below five thousand until I call.`]);
+  } else reply = "Go ahead.";
+
+  setTimeout(() => {
+    xmit("INT", them, "ctrl", reply, G.ctrlVoice[pos]);
+    if (effect === "hold" && sel) { sel.releaseHold = G.t + rnd(120, 420); }
+    if (effect === "release" && sel) { sel.releaseHold = 0; sel.released = true; }
+    if (effect && effect.startsWith("heading:") && sel) {
+      sel.assignedHdg = +effect.split(":")[1];
+      sel.released = true;
+      xmit(G.playerPos, "SYS", "sys", `${sel.cs}: departure wants heading ${sel.assignedHdg} off the runway.`, null);
+    }
+    G.hooks.strips();
+  }, rnd(900, 2200));
 }
 
 /* AI rings the player when work piles up */
 let nagAt = 90;
 function intercomNags() {
   if (G.t < nagAt) return;
-  nagAt = G.t + rnd(90, 150);
+  nagAt = G.t + rnd(240, 420);          // rare, and only with a real reason
   if (G.playerPos === "DEL") {
     const waiting = G.aircraft.filter(a => a.owner === "DEL" && a.called && a.clxStage === 1 && a.stateT > 120);
     if (waiting.length >= 2) {
