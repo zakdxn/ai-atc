@@ -59,6 +59,7 @@ const G = {
   counters: { clx: 0, taxi: 0, tko: 0, ldg: 0, ils: 0, ho: 0, sep: 0, ga: 0 },
   arrSeq: [],
   arrSpacing: 6.5,       // Dynamic arrival spacing requested by TWR
+  slowDel: 0, lastDelTime: 0, // Clearance Delivery flow controls
   nextArr: 20, nextDep: 6, nextEvent: 120,
   rushPhase: rnd(0, Math.PI * 2),
   density: "med",
@@ -363,7 +364,18 @@ function aiSay(pos, text) {
 function aiDEL(ac) {
   if (ac.state !== "gate" || !ac.called) return;
   const F = G.fac;
+
+  // DELAY MECHANISM: If Ground asked to slow down, throttle the clearances
+  if (G.slowDel && G.t < G.slowDel && ac.clxStage === 1) {
+    if (!G.lastDelTime) G.lastDelTime = 0;
+    if (G.t - G.lastDelTime < 75) { // Enforce 75 seconds between clearances
+      ac.aiAt = G.t + 5;
+      return;
+    }
+  }
+
   if (ac.clxStage === 1) {
+    G.lastDelTime = G.t; // Record time of this clearance
     const pdcRate = ["high", "insane"].includes(G.density) ? 0.8 : 0.3;
     if (Math.random() < pdcRate) {
        xmit("DEL", "TDLS", "sys", `PDC UPLINK ${ac.cs}: CLRD TO ${ac.dest.icao} VIA ${ac.sid.name} DP, MAINT ${F.initAlt}, EXP ${ac.cruise} 10 MIN, DPFRQ ${depFreq(F)}, SQ ${ac.sqk}`, null);
@@ -1750,6 +1762,12 @@ function playerTransmit(raw) {
        } else if (/\b(?:release|apreq)\b/.test(msg)) {
          intercom(targetPos, "apreq");
          handled = true;
+       } else if (/\b(?:slow|hold|stop|delay)\b/.test(msg) && targetPos === "DEL") {
+         intercom(targetPos, "slow_del");
+         handled = true;
+       } else if (/\b(?:resume|normal)\b/.test(msg) && targetPos === "DEL") {
+         intercom(targetPos, "resume_del");
+         handled = true;
        }
        if (handled) return;
     }
@@ -2168,6 +2186,8 @@ const LL_REQUESTS = {
   handoff:     { label: "coordinate handoff (selected)", to: p => p },
   traffic:     { label: "traffic call (selected)", to: p => p },
   restrict:    { label: "request a restriction",  to: () => "APP" },
+  slow_del:    { label: "request slower clearances", to: () => "DEL" },
+  resume_del:  { label: "resume normal clearances", to: () => "DEL" },
 };
 
 function intercom(pos, action) {
@@ -2199,6 +2219,8 @@ function intercom(pos, action) {
     traffic: sel ? `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, traffic, ${sel.cs}, ${Math.round(sel.distField())} out.`
                  : `${POS_NAME[pos]}, traffic call.`,
     restrict: `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, anything you need on my departures?`,
+    slow_del: `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, we're stacking up out here. Can you slow down the clearances?`,
+    resume_del: `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, we're looking good again, resume normal clearances.`,
   }[actKey] || `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}.`;
   xmit("INT", me, "you", ask, null);
 
@@ -2257,12 +2279,20 @@ function intercom(pos, action) {
     const mm = pick([5, 10, 15]);
     reply = pick([`Nothing right now, run them.`, `Give me ${mm} miles in trail on the ${G.fac.sids[0].name}s.`,
                   `Keep them at or below five thousand until I call.`]);
+  } else if (actKey === "slow_del") {
+    reply = "Roger, slowing them down. We'll hold them at the gate.";
+    effect = "slow_del";
+  } else if (actKey === "resume_del") {
+    reply = "Wilco, resuming normal clearance delivery.";
+    effect = "resume_del";
   } else reply = "Go ahead.";
 
   setTimeout(() => {
     xmit("INT", them, "ctrl", reply, G.ctrlVoice[pos]);
     if (effect === "hold" && sel) { sel.releaseHold = G.t + rnd(120, 420); }
     if (effect === "release" && sel) { sel.releaseHold = 0; sel.released = true; }
+    if (effect === "slow_del") { G.slowDel = G.t + 900; }
+    if (effect === "resume_del") { G.slowDel = 0; }
     if (effect && effect.startsWith("heading:") && sel) {
       sel.assignedHdg = +effect.split(":")[1];
       sel.released = true;
@@ -2340,6 +2370,8 @@ function startSession(facIdx, playerPos, density) {
   G.monitored.INT = true;
   G.selected = null;
   G.rushPhase = rnd(0, Math.PI * 2);
+  G.slowDel = 0;
+  G.lastDelTime = 0;
   tmuClear();
   if (typeof wxReset === "function") wxReset();
   opsNext = 240;
