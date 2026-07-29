@@ -106,9 +106,16 @@ function addPoints(n, why) {
 }
 
 function resolveRwy(id) {
+  if (!id) return null;
+  let normId = id.toUpperCase();
+  
+  // Pad single digits with a zero (e.g. "4L" -> "04L", "9" -> "09")
+  const m = normId.match(/^(\d{1,2})([LRC]?)$/);
+  if (m) normId = m[1].padStart(2, "0") + (m[2] || "");
+  
   for (const r of G.fac.runways) {
-    if (r.id === id) return { id, thr: r.thr, hdg: r.hdg, end: r.end };
-    if (r.recip === id) return { id, thr: r.end, hdg: norm360(r.hdg + 180), end: r.thr };
+    if (r.id === normId) return { id: r.id, thr: r.thr, hdg: r.hdg, end: r.end };
+    if (r.recip === normId) return { id: r.recip, thr: r.end, hdg: norm360(r.hdg + 180), end: r.thr };
   }
   return null;
 }
@@ -579,8 +586,9 @@ function aiAPP(ac) {
         P.stage = 2;
         steerTo(ac, ptOnFinal(ac, 15 + P.ext, 2 * P.side));
       } else {
-        steerTo(ac, ptOnFinal(ac, 17 + P.ext + 4, 7 * P.side));   // extend downwind
-        P.ext = Math.min(P.ext + 0.15, 8);
+        steerTo(ac, ptOnFinal(ac, 17 + P.ext + 10, 7 * P.side));   // extend downwind
+        P.ext = Math.min(P.ext + 0.4, 40);
+        ac.targetIas = 180; // slow to build gap safely
       }
     } else if (P.stage === 2) {
       steerTo(ac, ptOnFinal(ac, 15 + P.ext, 2 * P.side));
@@ -763,7 +771,7 @@ function stepAircraft(ac, dt) {
       return;
     }
     case "landedRoll": {
-      ac.ias = Math.max(15, ac.ias - 3.8 * dt);
+      ac.ias = Math.max(15, ac.ias - 5.5 * dt);
       const d = ac.ias / 3600 * dt;
       ac.x += Math.sin(d2r(ac.hdg)) * d;
       ac.y += Math.cos(d2r(ac.hdg)) * d;
@@ -772,7 +780,7 @@ function stepAircraft(ac, dt) {
       const rolled = -finalGeom(ac, R).along;
       const f = { x: Math.sin(d2r(R.hdg)), y: Math.cos(d2r(R.hdg)) };
       const exitAt = txIn ? (txIn.exit.x - R.thr.x) * f.x + (txIn.exit.y - R.thr.y) * f.y : 0;
-      if (ac.ias <= 32 && rolled >= exitAt - 0.05) {
+      if (ac.ias <= 40 && rolled >= exitAt - 0.05) {
         if (txIn) { ac.x = txIn.exit.x; ac.y = txIn.exit.y; }
         ac.ias = 14;
         ac.state = "rwyExit"; ac.stateT = 0;
@@ -931,11 +939,11 @@ function doGoAround(ac, why) {
     let unfair = false;
     if (G.playerPos === "TWR" && wasTwr && why === "traffic on the runway") {
       const R = ac.rwy || G.arrRwy;
-      const arrBlocker = G.aircraft.some(o => o !== ac && o.role === "arr" && o.state === "landedRoll" && (o.rwy || G.arrRwy).id === R.id);
+      const arrBlocker = G.aircraft.some(o => o !== ac && o.role === "arr" && ["landedRoll", "twrArr"].includes(o.state) && (o.rwy || G.arrRwy).id === R.id);
       if (arrBlocker) unfair = true;
     }
     if (unfair) {
-      addPoints(0, `Penalty waived: ${ac.cs} go-around due to tight AI spacing`);
+      addPoints(0, `Penalty waived: ${ac.cs} go-around due to AI spacing/rollout`);
     } else {
       addPoints(-15, `${ac.cs} went around (${why})`);
     }
@@ -1042,6 +1050,7 @@ function fixSquawkSpeech(s) {
 }
 
 const PHRASE_FIX = [
+  [/(?:nine|9)\s+(?:or|er|a)\b/g, "9"],
   [/\bclim(?:b|bing|bin|ate|it|bed)\s*(?:and|in|n|to)?\s*maintain(?:ed|ing)?\b/g, "climb and maintain"],
   [/\bclim(?:b|bing|bin|ate|it|bed)\s+(?:and\s+)?maintain\b/g, "climb and maintain"],
   [/\bdescen(?:d|ding|t|ded)\s*(?:and|in|n|to)?\s*maintain(?:ed|ing)?\b/g, "descend and maintain"],
@@ -1068,7 +1077,9 @@ function fixPhrases(s) {
 function normalizeTx(text) {
   let s = text.toLowerCase().replace(/[.,;:!?/\\'-]+/g, " ").replace(/\s+/g, " ").trim();
   s = s.replace(/\bflight level\b/g, "fl");
-  return fixSquawkSpeech(wordsToNumbers(fixSquawkSpeech(fixPhrases(s))));
+  s = fixSquawkSpeech(wordsToNumbers(fixSquawkSpeech(fixPhrases(s))));
+  s = s.replace(/\b(\d{1,2})\s+(left|right|center)\b/g, (m, n, side) => n + side.charAt(0));
+  return s;
 }
 
 function matchCallsign(s) {
@@ -1578,6 +1589,43 @@ function playerTransmit(raw) {
   xmit(G.playerPos, "YOU", "you", raw, null);
   const norm = normalizeTx(raw);
 
+  // Check for landline voice commands first
+  const icMatch = norm.match(/^(approach|departure|center|tower|ground|clearance)\b(.*)/);
+  if (icMatch) {
+    const posMap = { approach: "APP", departure: "APP", center: "CTR", tower: "TWR", ground: "GND", clearance: "DEL" };
+    const targetPos = posMap[icMatch[1]];
+    if (targetPos && targetPos !== G.playerPos) {
+       const msg = icMatch[2];
+       let handled = false;
+       if (/\b(?:more|increase|space|spacing|stretch|room|back\s+up)\b/.test(msg)) {
+         intercom(targetPos, "space_arr");
+         handled = true;
+       } else if (/\b(?:tighten|reduce|closer|less)\b/.test(msg)) {
+         intercom(targetPos, "tighten_arr");
+         handled = true;
+       } else if (/\b(?:status|how|looking)\b/.test(msg)) {
+         intercom(targetPos, "status");
+         handled = true;
+       } else if (/\b(?:restrict|need|departures)\b/.test(msg)) {
+         intercom(targetPos, "restrict");
+         handled = true;
+       } else if (/\b(?:point\s+out)\b/.test(msg)) {
+         intercom(targetPos, "pointout");
+         handled = true;
+       } else if (/\b(?:hand\s?off|coordinate)\b/.test(msg)) {
+         intercom(targetPos, "handoff");
+         handled = true;
+       } else if (/\b(?:cross|crossing)\b/.test(msg)) {
+         intercom(targetPos, "cross");
+         handled = true;
+       } else if (/\b(?:release|apreq)\b/.test(msg)) {
+         intercom(targetPos, "apreq");
+         handled = true;
+       }
+       if (handled) return;
+    }
+  }
+
   if (/\ball\s+(?:aircraft|stations)\b/.test(norm)) {
     const mins = (norm.match(/(\d{1,2})\s*minutes?\b/) || [])[1];
     const dur = mins ? Math.min(+mins, 60) * 60 : 420;
@@ -1999,7 +2047,7 @@ function intercom(pos, action) {
                   "Hold him, I've got one on a two mile final.", "Approved as requested."]);
     effect = /Hold/.test(reply) ? "hold" : "release";
   } else if (action === "space_arr") {
-    G.arrSpacing = Math.min((G.arrSpacing || 6.5) + 2.5, 15);
+    G.arrSpacing = Math.min((G.arrSpacing || 6.5) + 3.0, 30);
     reply = `Roger, stretching the final to ${G.arrSpacing} miles in trail.`;
   } else if (action === "tighten_arr") {
     G.arrSpacing = Math.max((G.arrSpacing || 6.5) - 2.5, 4);
