@@ -98,16 +98,9 @@ function drawSTARS() {
     }
   }
 
-  /* synthesized video map: sector boundary + approach corridors */
+  /* synthesized video map: approach corridors */
   ctx.strokeStyle = MAP_YEL;
   ctx.globalAlpha = 0.8;
-  ctx.beginPath();
-  G.fac.fixes.forEach((f, i) => {
-    const r = 1 + (jit(i * 3 + 1) - 0.5) * 0.25;
-    const [x, y] = W2S({ x: f.x * r, y: f.y * r });
-    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-  });
-  ctx.closePath(); ctx.stroke();
   ctx.setLineDash([5, 7]);
   for (const en of G.fac.entryFixes) {
     const f = G.fac.fixes.find(q => q.name === en);
