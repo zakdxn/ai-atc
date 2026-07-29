@@ -119,12 +119,23 @@ function declareEmergency(ac, forced) {
 function nordoStep(ac) {
   if (!ac.nordo) return;
   if (ac.role === "arr" && !ac.app) {
-    const arrRwy = ac.rwy || G.arrRwy;
+    const R = ac.rwy || G.arrRwy;
     ac.directFix = null;
-    ac.targetHdg = arrRwy.hdg;
     ac.targetAlt = Math.min(ac.targetAlt, 3000);
-    if (finalGeom(ac, arrRwy).along < 18 && Math.abs(finalGeom(ac, arrRwy).cross) < 3) {
-      ac.app = "cleared";
+    
+    const g = finalGeom(ac, R);
+    
+    // If not established on final, actively vector to a 15-mile final intercept point
+    if (g.along > 17 || Math.abs(g.cross) > 1.5) {
+      const b = { x: Math.sin(d2r(R.hdg + 180)), y: Math.cos(d2r(R.hdg + 180)) };
+      const interceptPt = { x: R.thr.x + b.x * 15, y: R.thr.y + b.y * 15 };
+      ac.targetHdg = bearingTo(ac, interceptPt);
+    } else {
+      // Intercepted final approach course, turn inbound and clear for the approach
+      ac.targetHdg = R.hdg;
+      if (g.along < 18 && Math.abs(g.cross) < 3) {
+        ac.app = "cleared";
+      }
     }
   }
 }

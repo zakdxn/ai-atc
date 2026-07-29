@@ -180,6 +180,7 @@ class Aircraft {
     this.taxiPath = null; this.taxiIdx = 0;
     this.pushT = 0;
     this.gaFlag = false;                   // gust event: force a go-around
+    this.isBreakingOut = false;
 
     if (role === "dep") {
       const gp = G.fac.gates;
@@ -190,38 +191,44 @@ class Aircraft {
       this.exitFix = G.fac.fixes.find(f => f.name === exitName);
       this.cruise = pick([28000, 30000, 32000, 34000, 36000]);
       this.route = `${this.sid.name} ${this.exitFix.name} ${pick(["J",""])}${pick(["146","64","80","174",""])} ${this.dest.icao.slice(1)}`.replace(/\s+/g, " ").trim();
+      
+      let spawnX, spawnY;
       if (typeof pickGateSpot === "function" && G.fac.real) {
         const taken = G.aircraft.filter(a => a.role === "dep" && a.alt < 40).map(a => ({ x: a.x, y: a.y }));
         const s = pickGateSpot(G.fac, taken);
-        this.x = s.x; this.y = s.y;
+        spawnX = s.x; spawnY = s.y;
       } else {
-        this.x = gp.anchor.x + rnd(-0.12, 0.12);
-        this.y = gp.anchor.y + rnd(-0.08, 0.08);
+        spawnX = gp.anchor.x + rnd(-0.03, 0.03);
+        spawnY = gp.anchor.y + rnd(-0.03, 0.03);
       }
-      this.hdg = this.targetHdg = rnd(0, 360);
-      this.state = "gate"; this.owner = "DEL";
-      this.callAt = G.t + rnd(4, 25);
-      
-      // GUARANTEE NO SPAWN ON RUNWAY
-      let tries = 0;
-      while (tries < 15) {
-        let bad = false;
+
+      // GUARANTEE NO SPAWN ON RUNWAY OR IN GRASS
+      let isBad = (spawnX === 0 && spawnY === 0);
+      if (!isBad) {
         for (const r of G.fac.runways) {
           const l2 = Math.pow(r.thr.x - r.end.x, 2) + Math.pow(r.thr.y - r.end.y, 2);
           if (l2 === 0) continue;
-          let t = ((this.x - r.thr.x) * (r.end.x - r.thr.x) + (this.y - r.thr.y) * (r.end.y - r.thr.y)) / l2;
+          let t = ((spawnX - r.thr.x) * (r.end.x - r.thr.x) + (spawnY - r.thr.y) * (r.end.y - r.thr.y)) / l2;
           t = Math.max(0, Math.min(1, t));
           const proj = { x: r.thr.x + t * (r.end.x - r.thr.x), y: r.thr.y + t * (r.end.y - r.thr.y) };
-          if (dist2(this, proj) < 0.04) { // Roughly 240 feet from centerline
-            bad = true; break;
+          if (dist2({x: spawnX, y: spawnY}, proj) < 0.08) { // 0.08 nm = ~500 feet exclusion zone
+            isBad = true; break;
           }
         }
-        if (!bad) break;
-        // Bump coordinate outward safely away from center
-        this.x += 0.06; 
-        this.y -= 0.06;
-        tries++;
       }
+
+      if (isBad) {
+        // If the spot is on a runway or invalid, tightly double-park on the concrete apron anchor
+        this.x = gp.anchor.x + rnd(-0.015, 0.015);
+        this.y = gp.anchor.y + rnd(-0.015, 0.015);
+      } else {
+        this.x = spawnX;
+        this.y = spawnY;
+      }
+      
+      this.hdg = this.targetHdg = rnd(0, 360);
+      this.state = "gate"; this.owner = "DEL";
+      this.callAt = G.t + rnd(4, 25);
       
     } else {
       this.star = pick(G.fac.stars);
@@ -233,7 +240,12 @@ class Aircraft {
       this.origin = pick(DESTS.filter(d => d.icao !== G.fac.icao));
       this.cruise = pick([30000, 32000, 34000, 36000, 38000]);
       const brg = bearingTo({ x: 0, y: 0 }, this.entryFix);
-      this.x = Math.sin(d2r(brg)) * 58; this.y = Math.cos(d2r(brg)) * 58;
+      
+      // STAGGER THE ARRIVALS SO THEY DON'T CLUMP
+      const stagger = rnd(58, 70);
+      this.x = Math.sin(d2r(brg)) * stagger; 
+      this.y = Math.cos(d2r(brg)) * stagger;
+      
       this.alt = this.targetAlt = pick([15000, 16000, 17000]);
       this.assignedAlt = this.alt;
       this.ias = this.targetIas = rnd(290, 320);
@@ -606,19 +618,26 @@ function aiAPP(ac) {
   const P = ac.appPlan;
   const ahead = seqLeader(ac);
   
-  // Use dynamically requested spacing or default 6.5
   const reqGap = G.arrSpacing || 6.5;
   const gapOk = !ahead || (finalGeom(ahead, ac.rwy || G.arrRwy).along < g.along - reqGap) ||
                 ["twrArr", "landedRoll", "rwyExit", "gndIn", "taxiIn", "gateIn"].includes(ahead.state);
 
-  // --- Proactive Separation Logic ---
-  if (ahead && ac.app !== "established") {
+  // --- ESCAPE VECTOR MANAGEMENT ---
+  if (ac.isBreakingOut) {
+    // We are currently flying the breakout vector. Check if we are safe yet.
+    if (!ahead || dist2(ac, ahead) >= 4.5 || g.along > 28) {
+      ac.isBreakingOut = false; // Separation achieved, drop back into standard vectoring
+    } else {
+      ac.aiAt = G.t + 5; 
+      return; // Still too close, continue holding escape heading
+    }
+  } else if (ahead && ac.app !== "established" && !["landedRoll", "rwyExit", "gndIn", "taxiIn", "gateIn"].includes(ahead.state)) {
     const d = dist2(ac, ahead);
     const altDiff = Math.abs(ac.alt - ahead.alt);
 
-    // 1. Aggressive Speed Control: Hard clamp speed if catching up
+    // 1. Hard Speed Braking
     if (d < reqGap + 4 && altDiff < 2000) {
-      let newSpd = 160; 
+      let newSpd = Math.max(160, Math.floor((ahead.ias - 10) / 10) * 10);
       if (ac.targetIas > newSpd) {
         ac.targetIas = newSpd;
         ac.assignedSpd = newSpd;
@@ -627,11 +646,14 @@ function aiAPP(ac) {
       }
     }
 
-    // 2. Safety Net Breakout Vector: If gap is dangerously close to collapsing, instantly break them out
-    if (d < 3.8 && altDiff < 1000 && ac.alt > 1500) {
+    // 2. The 3.8-Mile Breakout Vector
+    if (d < 3.8 && altDiff < 1000 && ac.alt > 1500 && g.along < 25) {
+      ac.isBreakingOut = true; 
       P.mode = "dw"; 
       P.side = g.cross >= 0 ? 1 : (Math.random() < 0.5 ? 1 : -1);
       P.stage = 0;
+      P.ext = Math.min(P.ext + 5, 25); // Extend downwind, but cap at 25 to prevent flying out of the 62-mile bounds
+      
       const hdgOut = norm360((ac.rwy || G.arrRwy).hdg + 180 + 90 * P.side);
       aiSay("APP", `${ac.spoken()}, traffic alert, turn ${P.side > 0 ? "right" : "left"} heading ${hdgWords(Math.round(hdgOut / 10) * 10)}, climb and maintain four thousand.`);
       ac.say(`Heading ${hdgWords(Math.round(hdgOut / 10) * 10)}, up to four thousand, ${ac.spoken()}.`);
@@ -816,13 +838,22 @@ function stepAircraft(ac, dt) {
       const path = ac.taxiPath;
       if (!path || ac.taxiIdx >= path.length) return;
       if (ac.holdFlag) return;                       // told to hold position
-      /* simple in-trail spacing on the ground; stopped traffic blocks too */
-      for (const o of G.aircraft) {
-        if (o !== ac && ["taxi", "taxiIn", "holdShortG", "holdShort"].includes(o.state) &&
-            dist2(ac, o) < 0.025 && sameDirAhead(ac, o)) return;
-      }
+      
       const wp = path[ac.taxiIdx];
-      const d = dist2(ac, wp);
+      const myDistToWp = dist2(ac, wp);
+
+      /* simple in-trail spacing on the ground; only yield to planes AHEAD of us toward the waypoint */
+      for (const o of G.aircraft) {
+        if (o !== ac && ["taxi", "taxiIn", "holdShortG", "holdShort"].includes(o.state)) {
+          if (dist2(ac, o) < 0.035) { // within ~200 ft
+            const oDistToWp = dist2(o, wp);
+            // Only yield if the other aircraft is closer to our target waypoint than we are
+            if (oDistToWp < myDistToWp && sameDirAhead(ac, o)) return;
+          }
+        }
+      }
+
+      const d = myDistToWp;
       const step = (ac.ias / 3600) * dt;
       if (d <= step) {
         ac.x = wp.x; ac.y = wp.y;
@@ -933,7 +964,8 @@ function flightStep(ac, dt) {
   if (ac.app === "cleared") {
     const R = ac.rwy || G.arrRwy;
     const g = finalGeom(ac, R);
-    if (g.along > 1 && g.along < 26 && Math.abs(g.cross) < 1.3 &&
+    // Increased ILS capture range to 60 miles to ensure far breakouts intercept properly
+    if (g.along > 1 && g.along < 60 && Math.abs(g.cross) < 2.0 &&
         Math.abs(angDiff(R.hdg, ac.hdg)) < 100) {
       ac.app = "established";
       ac.directFix = null;
@@ -1074,16 +1106,19 @@ G.proxPairs = new Set();
 function checkSeparation() {
   const flying = G.aircraft.filter(a => a.alt > 400 && !a.remove);
   const newConf = new Set(), newProx = new Set();
+  
+  // Helper to check parallel visual runway exemption
+  const isExempt = (a, b) => {
+    const aRwy = a.rwy || (a.role === "arr" ? G.arrRwy : G.depRwy);
+    const bRwy = b.rwy || (b.role === "arr" ? G.arrRwy : G.depRwy);
+    return aRwy && bRwy && aRwy.id !== bRwy.id && a.distField() < 12 && b.distField() < 12 && a.alt < 5000 && b.alt < 5000;
+  };
+
   for (let i = 0; i < flying.length; i++) {
     for (let j = i + 1; j < flying.length; j++) {
       const a = flying[i], b = flying[j];
       
-      // Exemption: If aircraft are assigned to DIFFERENT runways near the field, waive separation
-      const aRwy = a.rwy || (a.role === "arr" ? G.arrRwy : G.depRwy);
-      const bRwy = b.rwy || (b.role === "arr" ? G.arrRwy : G.depRwy);
-      if (aRwy.id !== bRwy.id && a.distField() < 12 && b.distField() < 12 && a.alt < 5000 && b.alt < 5000) {
-        continue;
-      }
+      if (isExempt(a, b)) continue;
 
       const h = dist2(a, b), v = Math.abs(a.alt - b.alt);
       const bothFinal = a.app === "established" && b.app === "established";
@@ -1113,7 +1148,10 @@ function checkSeparation() {
   for (const key of G.conflicts) {
     const [i1, i2] = key.split("-").map(Number);
     const a = G.aircraft.find(x => x.id === i1), b = G.aircraft.find(x => x.id === i2);
-    if (a && b && a.alt > 400 && b.alt > 400 && dist2(a, b) < 3.3 && Math.abs(a.alt - b.alt) < 1100) newConf.add(key);
+    // Explicitly apply the exemption to EXISTING conflicts so side-steps instantly clear the alarm
+    if (a && b && a.alt > 400 && b.alt > 400 && dist2(a, b) < 3.3 && Math.abs(a.alt - b.alt) < 1100 && !isExempt(a, b)) {
+      newConf.add(key);
+    }
   }
   G.conflicts = newConf;
   G.proxPairs = newProx;
