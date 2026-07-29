@@ -1069,7 +1069,10 @@ function touchdown(ac) {
 G.conflicts = new Set();
 G.proxPairs = new Set();
 function checkSeparation() {
-  const flying = G.aircraft.filter(a => a.alt > 400 && !a.remove);
+  // EXPLICITLY filter out ANY aircraft on the ground to prevent phantom taxiway conflicts
+  const groundStates = ["gate", "push", "taxiWait", "taxi", "holdShortG", "holdShort", "lineup", "rolling", "landedRoll", "rwyExit", "gndIn", "taxiIn", "gateIn"];
+  const flying = G.aircraft.filter(a => !groundStates.includes(a.state) && a.alt > 100 && !a.remove);
+  
   const newConf = new Set(), newProx = new Set();
   
   // Helper to check parallel visual runway exemption
@@ -1114,7 +1117,7 @@ function checkSeparation() {
     const [i1, i2] = key.split("-").map(Number);
     const a = G.aircraft.find(x => x.id === i1), b = G.aircraft.find(x => x.id === i2);
     // Explicitly apply the exemption to EXISTING conflicts so side-steps instantly clear the alarm
-    if (a && b && a.alt > 400 && b.alt > 400 && dist2(a, b) < 3.3 && Math.abs(a.alt - b.alt) < 1100 && !isExempt(a, b)) {
+    if (a && b && a.alt > 100 && b.alt > 100 && !groundStates.includes(a.state) && !groundStates.includes(b.state) && dist2(a, b) < 3.3 && Math.abs(a.alt - b.alt) < 1100 && !isExempt(a, b)) {
       newConf.add(key);
     }
   }
@@ -2368,6 +2371,9 @@ function randomEvent() {
   }
 }
 
+// Disable the buggy default safety scanner to prevent phantom go-arounds and false runway incursions
+window.safetyLogicScan = function() {}; 
+
 let uiAcc = 0;
 function tickEngine(realDt) {
   if (!G.running || G.paused) return;
@@ -2407,7 +2413,6 @@ function tickEngine(realDt) {
   if (uiAcc > 0.5) {
     uiAcc = 0;
     checkSeparation();
-    if (typeof safetyLogicScan === "function") safetyLogicScan();
     tmuTick();
     if (typeof opsTick === "function") opsTick(0.5);
     coordinationTick();
