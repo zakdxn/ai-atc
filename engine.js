@@ -387,7 +387,8 @@ function runwayFreeForTakeoff() {
 function aiTWR(ac) {
   const F = G.fac;
   if (ac.role === "dep") {
-    if (ac.state === "holdShort" && ac.called && runwayFreeForTakeoff()) {
+    if (ac.state === "holdShort" && ac.called && runwayFreeForTakeoff() &&
+        !(typeof isRwyClosed === "function" && isRwyClosed(G.depRwy.id))) {
       aiSay("TWR", pick([
         `${ac.spoken()}, wind ${hdgWords(G.atis.windDir)} at ${numWords(G.atis.windSpd)}, runway ${rwyWords(G.depRwy.id)}, cleared for takeoff.`,
         `${ac.spoken()}, runway ${rwyWords(G.depRwy.id)}, cleared for takeoff, wind ${hdgWords(G.atis.windDir)} at ${numWords(G.atis.windSpd)}.`,
@@ -1191,6 +1192,9 @@ function execOps(ac, ops) {
         break;
       case "luaw":
         if (ac.role !== "dep" || ac.state !== "holdShort") { unable.push("line up"); break; }
+        if (typeof isRwyClosed === "function" && isRwyClosed(G.depRwy.id)) {
+          unable.push(`line up, runway ${rwyWords(G.depRwy.id)} is closed`); break;
+        }
         ac.state = "lineup"; ac.stateT = 0;
         ac.x = G.depRwy.thr.x; ac.y = G.depRwy.thr.y; ac.hdg = G.depRwy.hdg;
         parts.push(`line up and wait runway ${rwyWords(G.depRwy.id)}`);
@@ -1198,6 +1202,9 @@ function execOps(ac, ops) {
         break;
       case "cto":
         if (ac.role !== "dep" || !["holdShort", "lineup"].includes(ac.state)) { unable.push("takeoff"); break; }
+        if (typeof isRwyClosed === "function" && isRwyClosed(G.depRwy.id)) {
+          unable.push(`takeoff, runway ${rwyWords(G.depRwy.id)} is closed`); break;
+        }
         parts.push(`cleared for takeoff runway ${rwyWords(G.depRwy.id)}`);
         startRoll(ac);
         break;
@@ -1686,6 +1693,7 @@ function tickEngine(realDt) {
   if (uiAcc > 0.5) {
     uiAcc = 0;
     checkSeparation();
+    if (typeof safetyLogicScan === "function") safetyLogicScan();
     intercomNags();
     G.hooks.score();
   }

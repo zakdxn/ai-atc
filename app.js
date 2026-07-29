@@ -454,6 +454,34 @@ document.getElementById("btnHelp").onclick = () => {
   document.getElementById("help").classList.add("open");
 };
 
+/* ---------------- flight plan window (ctrl+click a target) ---------------- */
+function openFlightPlan(ac) {
+  if (!ac) return;
+  G.selected = ac;
+  renderStrips();
+  const dep = ac.role === "dep" ? G.fac.icao : ac.origin.icao;
+  const dst = ac.role === "dep" ? ac.dest.icao : G.fac.icao;
+  document.getElementById("fpcard").innerHTML = `
+    <button class="close" onclick="document.getElementById('fp').classList.remove('open')">CLOSE</button>
+    <h2>${ac.cs} · ${ac.cid}</h2>
+    <div class="fpgrid">
+      <div class="fpf"><i>AID</i><b>${ac.cs}</b></div>
+      <div class="fpf"><i>CID</i><b>${ac.cid}</b></div>
+      <div class="fpf"><i>BCN</i><b>${ac.sqk}</b></div>
+      <div class="fpf"><i>TYP</i><b>${ac.type}${ac.heavy ? "/H" : ""}</b></div>
+      <div class="fpf"><i>EQ</i><b>${ac.eq}</b></div>
+      <div class="fpf"><i>DEP</i><b>${dep}</b></div>
+      <div class="fpf"><i>DEST</i><b>${dst}</b></div>
+      <div class="fpf"><i>SPD</i><b>${ac.assignedSpd || "—"}</b></div>
+      <div class="fpf"><i>ALT</i><b>${Math.round(ac.cruise / 100)}</b></div>
+    </div>
+    <div class="fprte"><i>RTE</i>${ac.route || ""}</div>
+    <div class="fprte"><i>RMK</i>${ac.rmk || ""}</div>
+    <p class="dimtxt">Status: ${stateLabel(ac)} · with ${ac.owner}${ac.hoTo ? ` · H/O ${ac.hoTo}${ac.hoAccepted ? " accepted" : " pending"}` : ""}
+    ${ac.alt > 50 ? ` · ${Math.round(ac.alt)} ft · ${Math.round(ac.gs())} kt` : ""}</p>`;
+  document.getElementById("fp").classList.add("open");
+}
+
 /* ---------------- PTT ---------------- */
 initPTT(document.getElementById("btnMic"), txt => { playerTransmit(txt); });
 

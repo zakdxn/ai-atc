@@ -222,14 +222,23 @@ const ASDX_BG = "#0e5866", ASDX_PVMT = "#3c4046", ASDX_BLDG = "#9a9aa0", ASDX_GR
 function drawASDX() {
   const scale = curScale();
   const W2S = p => [V.cx + (p.x - V.asdxPan.x) * scale, V.cy - (p.y - V.asdxPan.y) * scale];
-  ctx.fillStyle = ASDX_BG;
+  const N = DCB.night;
+  ctx.fillStyle = N ? "#06232a" : ASDX_BG;
   ctx.fillRect(0, 0, V.w, V.h);
   ctx.font = mono(11);
 
+  const bt = DCB.brite;
+  const sh = (hex, f) => {
+    const n = parseInt(hex.slice(1), 16);
+    const c = [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+      .map(x => Math.max(0, Math.min(255, Math.round(x * f))));
+    return `rgb(${c[0]},${c[1]},${c[2]})`;
+  };
   drawPavement(W2S, scale, {
-    taxi: ASDX_PVMT, taxiLine: null, rwy: "#000", rwyLine: null,
-    ramp: "#8f9096", bldg: ASDX_BLDG, label: "#c8ccd2",
-    twLabel: "#e8c95a", holdBar: "#c8a020",
+    taxi: sh(N ? "#2b2f34" : ASDX_PVMT, bt), taxiLine: null,
+    rwy: "#000", rwyLine: null,
+    ramp: sh(N ? "#6a6b70" : "#8f9096", bt), bldg: sh(ASDX_BLDG, bt),
+    label: sh("#c8ccd2", bt), twLabel: sh("#e8c95a", bt), holdBar: "#c8a020",
   });
 
   /* safety logic: paint the runway red when occupied with traffic short final */
@@ -247,47 +256,42 @@ function drawASDX() {
     if (ac.alt > 2000 || ac.distField() > V.asdxRange * 2.4) continue;
     if (["gate", "clxOk", "gndCall", "gateIn"].includes(ac.state)) continue;
     const [x, y] = W2S(ac);
-    drawPlaneIcon(x, y, ac.hdg, "#ffffff", G.selected === ac);
-    ctx.fillStyle = G.selected === ac ? "#ffd75e" : ASDX_GRN;
+    const alerted = DCB.alerts.some(a => a.acId === ac.id);
+    drawPlaneIcon(x, y, ac.hdg, alerted ? "#ff5050" : "#ffffff", G.selected === ac);
+    if (alerted) {
+      ctx.strokeStyle = "#ff3030"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(x, y, 15, 0, Math.PI * 2); ctx.stroke(); ctx.lineWidth = 1;
+    }
+    if (DCB.inhibited.has(ac.id)) {
+      ctx.strokeStyle = "#ffffff";
+      ctx.strokeRect(x - 9, y - 9, 18, 18);
+    }
+    if (!DCB.dbOn) continue;
+    /* when an alert is up, unaffected traffic drops to a partial block */
+    const anyAlert = DCB.alerts.length > 0;
+    const trait = anyAlert && !alerted ? "partial" : dbTraitFor(ac);
+    ctx.font = mono(DCB.charSize);
+    ctx.fillStyle = G.selected === ac ? "#ffd75e" : alerted ? "#ff6060" : ASDX_GRN;
     ctx.strokeStyle = ASDX_GRN; ctx.globalAlpha = 0.5;
     ctx.beginPath(); ctx.moveTo(x + 4, y - 4); ctx.lineTo(x + 14, y - 12); ctx.stroke();
     ctx.globalAlpha = 1;
     ctx.fillText(ac.cs, x + 16, y - 14);
-    const l2 = ac.alt > 40 ? String(Math.round(ac.alt / 100) * 100)
-             : `${ac.type} ${ac.role === "dep" ? ac.exitFix.name : G.arrRwy.id}`;
-    ctx.fillText(l2, x + 16, y - 2);
+    if (trait !== "partial") {
+      const l2 = ac.alt > 40
+        ? (DCB.dbAlt ? String(Math.round(ac.alt / 100) * 100) : ac.type)
+        : `${ac.type} ${ac.role === "dep" ? ac.exitFix.name : G.arrRwy.id}`;
+      ctx.fillText(l2, x + 16, y - 2);
+    }
+    ctx.font = mono(11);
   }
 
-  /* DCB button bar */
-  drawDCB([
-    `RANGE ${V.asdxRange.toFixed(1)}`, "MAP RPOS", "UNDO", "PREF", "BRITE",
-    `SAFETY LOGIC ${G.arrRwy.id}/${G.depRwy.id}`, "TOOLS", "VECTOR ON/OFF",
-    "TEMP DATA", "LDR LNG 2", "DB ON/OFF", "TRK SUSP", "OPER MODE",
-  ]);
+  drawDCBOverlays(W2S);
+  drawDCBBar();
   ctx.font = mono(12);
   ctx.fillStyle = ASDX_GRN;
-  ctx.fillText(`RWY CFG: ${G.arrRwy.id}/${G.depRwy.id}`, 14, 62);
-  ctx.fillText(`TWR CFG: ${G.playerPos === "GND" ? "GC" : "LC"}`, 14, 76);
-  const d = new Date();
-  ctx.fillText(`${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}/${String(d.getFullYear() % 100)}`, V.w - 100, 62);
-  ctx.fillText(`${clockHM()}/${String(Math.floor(G.t) % 60).padStart(2, "0")}`, V.w - 100, 76);
-  ctx.font = mono(11);
-}
-
-function drawDCB(labels) {
-  ctx.fillStyle = "#20242a";
-  ctx.fillRect(0, 0, V.w, 40);
-  ctx.font = mono(9);
-  let x = 4;
-  for (const lb of labels) {
-    const w = Math.max(52, ctx.measureText(lb).width + 12);
-    if (x + w > V.w - 4) break;
-    ctx.fillStyle = "#3a3f47";
-    ctx.fillRect(x, 4, w - 3, 32);
-    ctx.fillStyle = "#cfd4da";
-    ctx.fillText(lb, x + 5, 24);
-    x += w;
-  }
+  const sy = DCB.barTop ? 62 : 22;
+  ctx.fillText(`RWY CFG: ${G.arrRwy.id}/${G.depRwy.id}${DCB.closedRwys.size ? "  CLSD: " + [...DCB.closedRwys].join(",") : ""}`, 14, sy);
+  ctx.fillText(`${clockHM()}/${String(Math.floor(G.t) % 60).padStart(2, "0")}  ${String(G.atis.windDir).padStart(3, "0")}${String(G.atis.windSpd).padStart(2, "0")}KT  A${G.atis.qnh}`, 14, sy + 14);
   ctx.font = mono(11);
 }
 
@@ -307,6 +311,7 @@ function drawPavement(W2S, scale, TH) {
     };
     for (const p of G.fac.pav.apr) poly(p, TH.ramp);
     for (const p of G.fac.pav.twy) poly(p, TH.taxi);
+    drawTaxiLabels(W2S, scale, TH);
     /* the routes in use, drawn as painted centrelines */
     if (TH.taxiLine) {
       ctx.strokeStyle = TH.taxiLine;
@@ -518,9 +523,16 @@ function hitTest(mx, my) {
   return best;
 }
 
+canvas.addEventListener("contextmenu", e => e.preventDefault());
 canvas.addEventListener("mousedown", e => {
-  V.dragging = true;
+  if (e.button === 1) e.preventDefault();
+  V.dragging = e.button === 0;
   V.dragX = e.clientX; V.dragY = e.clientY; V.dragMoved = 0;
+  if (e.button === 1 && G.running) {           // middle click finishes a shape
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    dcbClick(mx, my, screenToWorld(mx, my), 1);
+  }
 });
 canvas.addEventListener("mousemove", e => {
   if (!V.dragging) return;
@@ -530,6 +542,10 @@ canvas.addEventListener("mousemove", e => {
   const pan = curPan(), scale = curScale();
   pan.x -= dx / scale; pan.y += dy / scale;
 });
+function screenToWorld(mx, my) {
+  const s = curScale(), p = curPan();
+  return { x: (mx - V.cx) / s + p.x, y: -(my - V.cy) / s + p.y };
+}
 window.addEventListener("mouseup", e => {
   if (!V.dragging) return;
   V.dragging = false;
@@ -537,8 +553,12 @@ window.addEventListener("mouseup", e => {
   const rect = canvas.getBoundingClientRect();
   const mx = e.clientX - rect.left, my = e.clientY - rect.top;
   if (mx < 0 || my < 0 || mx > rect.width || my > rect.height) return;
+  if (dcbClick(mx, my, screenToWorld(mx, my), 0)) return;   // consumed by the DCB
   const hit = hitTest(mx, my);
-  if (hit) { G.selected = hit; G.hooks.strips(); }
+  if (hit) {
+    if (e.ctrlKey) { openFlightPlan(hit); return; }         // ctrl+click opens the flight plan
+    G.selected = hit; G.hooks.strips();
+  }
 });
 canvas.addEventListener("wheel", e => {
   e.preventDefault();
@@ -550,3 +570,47 @@ canvas.addEventListener("wheel", e => {
 canvas.addEventListener("dblclick", () => {
   V.pan = { x: 0, y: 0 }; V.asdxPan = { x: 0, y: 0 }; V.cabPan = { x: 0, y: 0 };
 });
+
+
+/* ---------- taxiway labels ----------
+   Real taxiway names are not present in the open dataset, so each
+   significant strip of pavement is lettered per facility (stable within
+   a field) and labelled along its length, the way a chart would. */
+function drawTaxiLabels(W2S, scale, TH) {
+  const F = G.fac;
+  if (!F.pav || !F.pav.twy.length) return;
+  if (!F.twyLabels) {
+    const L = ["A", "B", "C", "D", "E", "F", "G", "H", "J", "K", "L", "M", "N", "P", "R", "S", "T", "V", "W"];
+    const cand = [];
+    F.pav.twy.forEach((flat, i) => {
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (let k = 0; k < flat.length; k += 2) {
+        x0 = Math.min(x0, flat[k]); x1 = Math.max(x1, flat[k]);
+        y0 = Math.min(y0, flat[k + 1]); y1 = Math.max(y1, flat[k + 1]);
+      }
+      const w = x1 - x0, h = y1 - y0;
+      const span = Math.max(w, h);
+      if (span < 0.13) return;                       // ignore short stubs
+      cand.push({ i, span, c: { x: (x0 + x1) / 2, y: (y0 + y1) / 2 },
+                  horiz: w >= h, x0, y0, x1, y1 });
+    });
+    cand.sort((a, b) => b.span - a.span);
+    F.twyLabels = cand.slice(0, L.length).map((o, k) => ({ ...o, name: L[k] }));
+  }
+  ctx.font = mono(Math.max(9, Math.min(15, scale * 0.055)));
+  for (const t of F.twyLabels) {
+    if (t.span * scale < 42) continue;               // too small to letter at this zoom
+    const pts = t.horiz
+      ? [{ x: t.x0 + t.span * 0.25, y: t.c.y }, { x: t.x1 - t.span * 0.25, y: t.c.y }]
+      : [{ x: t.c.x, y: t.y0 + t.span * 0.25 }, { x: t.c.x, y: t.y1 - t.span * 0.25 }];
+    for (const p of pts) {
+      const [x, y] = W2S(p);
+      if (x < 0 || y < 0 || x > V.w || y > V.h) continue;
+      ctx.fillStyle = "rgba(0,0,0,.55)";
+      ctx.fillRect(x - 8, y - 8, 16, 15);
+      ctx.fillStyle = TH.twLabel || "#e8c95a";
+      ctx.fillText(t.name, x - 3.5, y + 3.5);
+    }
+  }
+  ctx.font = mono(11);
+}

@@ -128,6 +128,12 @@ footer .freq{color:var(--dim);white-space:nowrap;font-size:12px}
 .tdlsrow{display:flex;align-items:center;gap:12px;border:1px solid var(--edge);border-radius:6px;
   padding:8px 10px;margin:7px 0;font-size:12px}
 .tdlsrow button{margin-left:auto;white-space:nowrap}
+.fpgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:10px;margin:12px 0}
+.fpf{border:1px solid var(--edge);border-radius:4px;padding:5px 8px}
+.fpf i{display:block;font-style:normal;font-size:9.5px;color:var(--dim);letter-spacing:.08em}
+.fpf b{color:#8ab8ff;font-size:13px}
+.fprte{border:1px solid var(--edge);border-radius:4px;padding:6px 8px;margin:8px 0;color:#8ab8ff}
+.fprte i{font-style:normal;font-size:9.5px;color:var(--dim);letter-spacing:.08em;margin-right:8px}
 
 @media (max-width:1050px){
   #stripbay{width:180px}
@@ -138,7 +144,7 @@ footer .freq{color:var(--dim);white-space:nowrap;font-size:12px}
 <body>
 
 <header>
-  <span class="title">AI ATC</span>
+  <span class="title">AI ATC</span><span class="fac" id="build" title="Build number. If this does not match what Claude reports, your browser is serving a cached copy: hard-refresh with Ctrl+Shift+R.">b5</span>
   <span class="fac" id="facinfo">offline</span>
   <span class="clock" id="clock">00:00:00</span>
   <div class="chips">
@@ -187,13 +193,15 @@ footer .freq{color:var(--dim);white-space:nowrap;font-size:12px}
 <div class="overlay" id="help"><div class="card" id="helpcard"></div></div>
 <div class="overlay" id="sop"><div class="card" id="sopcard"></div></div>
 <div class="overlay" id="tdls"><div class="card" id="tdlscard"></div></div>
+<div class="overlay" id="fp"><div class="card" id="fpcard"></div></div>
 
-<script src="airports.js"></script>
-<script src="data.js"></script>
-<script src="audio.js"></script>
-<script src="engine.js"></script>
-<script src="geo.js"></script>
-<script src="views.js"></script>
-<script src="app.js"></script>
+<script src="airports.js?v=5"></script>
+<script src="data.js?v=5"></script>
+<script src="audio.js?v=5"></script>
+<script src="engine.js?v=5"></script>
+<script src="geo.js?v=5"></script>
+<script src="views.js?v=5"></script>
+<script src="dcb.js?v=5"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>
