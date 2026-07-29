@@ -558,6 +558,18 @@ function startRoll(ac) {
 function aiAPP(ac) {
   const F = G.fac;
   if (ac.role === "dep") {
+    // NEW: Intercept departures with non-NORDO emergencies and force them to return!
+    if (ac.emerg && ac.emerg.id !== "nordo" && !ac.returning) {
+      ac.returning = true; // Prevents loop
+      ac.role = "arr";     // Flip them to an arrival
+      ac.appPlan = null;   // Nuke their departure routing
+      ac.state = "appCtl"; // Force them to approach state
+      setOwner(ac, "APP", true); // Ensure Approach explicitly owns them to sequence
+      aiSay("APP", `${ac.spoken()}, radar contact, expect vectors for an immediate return to runway ${rwyWords(G.arrRwy.id)}.`);
+      ac.aiAt = G.t + 5;
+      return;
+    }
+
     if (ac.state !== "depCtl") return;
     if (!ac.appPlan) {
       ac.appPlan = { stage: 0 };
@@ -1008,6 +1020,8 @@ function flightStep(ac, dt) {
 }
 
 function doGoAround(ac, why) {
+  const ownerBefore = ac.owner;
+  
   ac.app = null;
   ac.landClr = false;
   ac.gaFlag = false;
@@ -1035,13 +1049,22 @@ function doGoAround(ac, why) {
   
   if (["TWR", "APP"].includes(G.playerPos)) {
     let unfair = false;
-    if (G.playerPos === "TWR" && wasTwr) {
-      if (why === "traffic on the runway" || why === "too high") {
+    
+    // Globally waive weather and math/glideslope glitches
+    if (why === "wind shear on short final" || why === "too high") {
         unfair = true;
-      }
+    } 
+    // Waive if the plane wasn't even under your control when the event triggered
+    else if (ownerBefore !== G.playerPos) {
+        unfair = true;
     }
+    // Specific waived conditions based on player position
+    else if (G.playerPos === "TWR" && wasTwr && why === "traffic on the runway") {
+        unfair = true;
+    }
+
     if (unfair) {
-      addPoints(0, `Penalty waived: ${ac.cs} go-around due to AI spacing/rollout (${why})`);
+      addPoints(0, `Penalty waived: ${ac.cs} go-around (${why})`);
     } else {
       addPoints(-15, `${ac.cs} went around (${why})`);
     }
@@ -1077,9 +1100,22 @@ function checkSeparation() {
   
   // Helper to check parallel visual runway exemption
   const isExempt = (a, b) => {
+    // 1. Ground planes are handled by the filter already, but just in case:
+    if (a.alt <= 100 || b.alt <= 100) return true;
+
     const aRwy = a.rwy || (a.role === "arr" ? G.arrRwy : G.depRwy);
     const bRwy = b.rwy || (b.role === "arr" ? G.arrRwy : G.depRwy);
-    return aRwy && bRwy && aRwy.id !== bRwy.id && a.distField() < 12 && b.distField() < 12 && a.alt < 5000 && b.alt < 5000;
+
+    // 2. Terminal Visual Separation Area: Inside 6 miles and below 3500 ft, radar separation is suspended.
+    if (a.distField() < 6 && b.distField() < 6 && a.alt < 3500 && b.alt < 3500) {
+      return true;
+    }
+
+    // 3. Parallel approach exemption
+    if (aRwy && bRwy && aRwy.id !== bRwy.id && a.distField() < 12 && b.distField() < 12 && a.alt < 5000 && b.alt < 5000) {
+      return true;
+    }
+    return false;
   };
 
   for (let i = 0; i < flying.length; i++) {
@@ -1131,8 +1167,10 @@ function pairState(ac) {
 }
 
 const WORD_NUM = {
-  zero: "0", oh: "0", one: "1", two: "2", three: "3", tree: "3", four: "4",
-  five: "5", fife: "5", six: "6", seven: "7", eight: "8", nine: "9", niner: "9",
+  zero: "0", oh: "0", o: "0", one: "1", won: "1", two: "2", to: "2", too: "2",
+  three: "3", tree: "3", four: "4", for: "4", fore: "4",
+  five: "5", fife: "5", six: "6", seven: "7", eight: "8", ate: "8",
+  nine: "9", niner: "9",
 };
 function wordsToNumbers(text) {
   const toks = text.split(/\s+/);
@@ -1173,7 +1211,23 @@ function fixSquawkSpeech(s) {
 }
 
 const PHRASE_FIX = [
-  [/(?:nine|9)\s+(?:or|er|a)\b/g, "9"],
+  // Global STT catch-alls
+  [/\bate\b/g, "eight"],
+  [/\bwon\b/g, "one"],
+  [/\btoo\b/g, "two"],
+  [/\bfore\b/g, "four"],
+  [/\bcurd\b/g, "cleared"],
+  [/\bclared\b/g, "cleared"],
+  [/\bspare\s+wings\b/g, "spirit wings"],
+  [/\bspring\s+wings\b/g, "spirit wings"],
+  [/\bspeed\s+bird\b/g, "speedbird"],
+  [/\bbrick\s+yard\b/g, "brickyard"],
+  [/\b(spirit\s*wings|alaska|delta|american|united|southwest|jetblue|fedex|ups|brickyard|speedbird|citrus|skywest|envoy)\s+for\b/g, "$1 four"],
+
+  // Phraseology standardizers
+  [/(?:nine|9|09)\s+(?:or|er|a|are)\b/g, "9"],
+  [/\bare\s+heavy\b/g, "heavy"],
+  [/\bline\s+of\s+bandwidth\b/g, "line up and wait"],
   [/\bclim(?:b|bing|bin|ate|it|bed)\s*(?:and|in|n|to)?\s*maintain(?:ed|ing)?\b/g, "climb and maintain"],
   [/\bclim(?:b|bing|bin|ate|it|bed)\s+(?:and\s+)?maintain\b/g, "climb and maintain"],
   [/\bdescen(?:d|ding|t|ded)\s*(?:and|in|n|to)?\s*maintain(?:ed|ing)?\b/g, "descend and maintain"],
@@ -1182,16 +1236,18 @@ const PHRASE_FIX = [
   [/\bdescen(?:ding|t|ded)\b/g, "descend"],
   [/\bcleared?\s+to\s+land(?:ing)?\b/g, "cleared to land"],
   [/\bclear\s+(?:to|for)\b/g, "cleared to"],
+  [/\bcurd\s+(?:to|for)\b/g, "cleared for"],
   [/\bturn(?:ing)?\s+(?:left|lft)\b/g, "turn left"],
   [/\bturn(?:ing)?\s+right\b/g, "turn right"],
   [/\bhead(?:ing|ings)?\b/g, "heading"],
   [/\bsquak|\bsquark|\bsquawking\b/g, "squawk"],
-  [/\bline\s*up\s+(?:and|end|n)?\s+(?:wait|weight|way)\b/g, "line up and wait"],
+  [/\bline\s*up\s+(?:and|end|n|in)?\s+(?:wait|weight|way)\b/g, "line up and wait"],
   [/\bcleared?\s+for\s+take\s*off\b/g, "cleared for takeoff"],
   [/\bcontact\s+to(?:wer|ward)\b/g, "contact tower"],
   [/\bread\s*back\s+correct(?:ed)?\b/g, "read back correct"],
   [/\bpush\s*back\s+approved?\b/g, "pushback approved"],
 ];
+
 function fixPhrases(s) {
   for (const [re, to] of PHRASE_FIX) s = s.replace(re, to);
   return s;
@@ -2258,6 +2314,9 @@ function intercomNags() {
   }
 }
 
+// Disable the buggy default safety scanner to prevent phantom go-arounds and false runway incursions
+window.safetyLogicScan = function() {}; 
+
 function genAtis(fac, cfg) {
   const letter = pick(["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel", "India", "Juliett"]);
   let lo = cfg.windLo, hi = cfg.windHi;
@@ -2371,9 +2430,6 @@ function randomEvent() {
   }
 }
 
-// Disable the buggy default safety scanner to prevent phantom go-arounds and false runway incursions
-window.safetyLogicScan = function() {}; 
-
 let uiAcc = 0;
 function tickEngine(realDt) {
   if (!G.running || G.paused) return;
@@ -2413,6 +2469,7 @@ function tickEngine(realDt) {
   if (uiAcc > 0.5) {
     uiAcc = 0;
     checkSeparation();
+    if (typeof safetyLogicScan === "function") safetyLogicScan();
     tmuTick();
     if (typeof opsTick === "function") opsTick(0.5);
     coordinationTick();
