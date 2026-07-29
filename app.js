@@ -250,7 +250,10 @@ function sopHtml() {
   const F = G.fac, cfg = G.cfg;
   const posRows = {
     DEL: `<tr><td>Clearance format</td><td>"[callsign], cleared to [destination] airport, [SID] departure then as filed,
-      climb and maintain <b>${F.initAlt}</b>, departure frequency <b>${F.freqs.APP}</b>, squawk [code on the strip]."</td></tr>
+      climb and maintain <b>${F.initAlt}</b>, expect [cruise from the strip's ALT field] one zero minutes
+      after departure, departure frequency <b>${F.freqs.APP}</b>, squawk [BCN from the strip]."</td></tr>
+      <tr><td>Strip fields</td><td><b>BCN</b> is the squawk. <b>ALT</b> is the requested cruise, which the crew
+      reads back as the "expect" altitude. <b>RTE</b> is the filed route.</td></tr>
       <tr><td>Verify readback</td><td>Pilots misread a squawk or altitude about 1 in 4 times. Catch it with
       <code>readback incorrect</code> or by restating the item; confirm good ones with <code>readback correct</code>.</td></tr>
       <tr><td>Then</td><td>The strip pushes to Ground automatically when the pilot is told the readback is correct.</td></tr>`,

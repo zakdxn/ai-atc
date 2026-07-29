@@ -253,11 +253,12 @@ function drawASDX() {
 
   /* aircraft: white icons, green datablocks (parked aircraft are not tracked) */
   for (const ac of G.aircraft) {
-    if (ac.alt > 2000 || ac.distField() > V.asdxRange * 2.4) continue;
-    if (["gate", "clxOk", "gndCall", "gateIn"].includes(ac.state)) continue;
+    if (ac.alt > 2000 || ac.distField() > V.asdxRange * 3.5) continue;
+    const parked = ["gate", "clxOk", "gndCall", "gateIn"].includes(ac.state);
     const [x, y] = W2S(ac);
     const alerted = DCB.alerts.some(a => a.acId === ac.id);
-    drawPlaneIcon(x, y, ac.hdg, alerted ? "#ff5050" : "#ffffff", G.selected === ac);
+    drawPlaneIcon(x, y, ac.hdg, alerted ? "#ff5050" : parked ? "#9aa4ad" : "#ffffff",
+                  G.selected === ac);
     if (alerted) {
       ctx.strokeStyle = "#ff3030"; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(x, y, 15, 0, Math.PI * 2); ctx.stroke(); ctx.lineWidth = 1;
@@ -271,7 +272,8 @@ function drawASDX() {
     const anyAlert = DCB.alerts.length > 0;
     const trait = anyAlert && !alerted ? "partial" : dbTraitFor(ac);
     ctx.font = mono(DCB.charSize);
-    ctx.fillStyle = G.selected === ac ? "#ffd75e" : alerted ? "#ff6060" : ASDX_GRN;
+    ctx.fillStyle = G.selected === ac ? "#ffd75e" : alerted ? "#ff6060"
+                  : parked ? "#1f9a4a" : ASDX_GRN;
     ctx.strokeStyle = ASDX_GRN; ctx.globalAlpha = 0.5;
     ctx.beginPath(); ctx.moveTo(x + 4, y - 4); ctx.lineTo(x + 14, y - 12); ctx.stroke();
     ctx.globalAlpha = 1;
@@ -279,6 +281,7 @@ function drawASDX() {
     if (trait !== "partial") {
       const l2 = ac.alt > 40
         ? (DCB.dbAlt ? String(Math.round(ac.alt / 100) * 100) : ac.type)
+        : parked ? `${ac.type} ${ac.role === "dep" ? "gate " + ac.gate : "gate"}`
         : `${ac.type} ${ac.role === "dep" ? ac.exitFix.name : G.arrRwy.id}`;
       ctx.fillText(l2, x + 16, y - 2);
     }
@@ -470,12 +473,14 @@ function drawCAB() {
 
   /* aircraft */
   for (const ac of G.aircraft) {
-    if (ac.distField() > V.cabRange * 2.6 || ac.alt > 3000) continue;
-    if (["gate", "clxOk", "gndCall", "gateIn"].includes(ac.state)) continue;
+    if (ac.distField() > V.cabRange * 3.5 || ac.alt > 6000) continue;
+    const parked = ["gate", "clxOk", "gndCall", "gateIn"].includes(ac.state);
     const [x, y] = W2S(ac);
-    drawPlaneIcon(x, y, ac.hdg, night ? "#e8e8f0" : "#f4f4f8", G.selected === ac);
+    const col = parked ? (night ? "#8e8e98" : "#c8c8d0") : (night ? "#e8e8f0" : "#f4f4f8");
+    drawPlaneIcon(x, y, ac.hdg, col, G.selected === ac);
     ctx.fillStyle = G.selected === ac ? "#ffd75e" : night ? "#9fd8ef" : "#12303e";
-    ctx.fillText(`${ac.cs}${ac.alt > 40 ? " " + Math.round(ac.alt) + "ft" : ""}`, x + 12, y - 8);
+    const tag = ac.alt > 40 ? ` ${Math.round(ac.alt)}ft` : parked ? "" : ` ${stateLabel(ac)}`;
+    ctx.fillText(ac.cs + tag, x + 12, y - 8);
   }
 
   /* METAR bar, CRC cab style */
@@ -514,7 +519,8 @@ function hitTest(mx, my) {
   let best = null, bestD = 18;
   for (const ac of G.aircraft) {
     if (V.mode === "STARS" && ac.alt < 40 && !["rolling", "landedRoll"].includes(ac.state)) continue;
-    if (V.mode !== "STARS" && ["gate", "clxOk", "gndCall", "gateIn"].includes(ac.state)) continue;
+    if (V.mode === "ASDX" && (ac.alt > 2000 || ac.distField() > V.asdxRange * 3.5)) continue;
+    if (V.mode === "CAB" && (ac.alt > 6000 || ac.distField() > V.cabRange * 3.5)) continue;
     const x = V.cx + (ac.x - pan.x) * scale, y = V.cy - (ac.y - pan.y) * scale;
     const d = Math.hypot(mx - x, my - y);
     if (d < bestD) { bestD = d; best = ac; }

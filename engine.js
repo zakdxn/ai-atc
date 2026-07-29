@@ -153,8 +153,15 @@ class Aircraft {
       this.exitFix = G.fac.fixes.find(f => f.name === exitName);
       this.cruise = pick([28000, 30000, 32000, 34000, 36000]);
       this.route = `${this.sid.name} ${this.exitFix.name} ${pick(["J",""])}${pick(["146","64","80","174",""])} ${this.dest.icao.slice(1)}`.replace(/\s+/g, " ").trim();
-      this.x = gp.anchor.x + rnd(-0.12, 0.12);
-      this.y = gp.anchor.y + rnd(-0.08, 0.08);
+      if (typeof pickGateSpot === "function" && G.fac.real) {
+        const taken = G.aircraft.filter(a => a.role === "dep" && a.alt < 40).map(a => ({ x: a.x, y: a.y }));
+        const s = pickGateSpot(G.fac, taken);
+        this.x = s.x; this.y = s.y;
+      } else {
+        this.x = gp.anchor.x + rnd(-0.12, 0.12);
+        this.y = gp.anchor.y + rnd(-0.08, 0.08);
+      }
+      this.hdg = this.targetHdg = rnd(0, 360);
       this.state = "gate"; this.owner = "DEL";
       this.callAt = G.t + rnd(4, 25);
     } else {
@@ -288,7 +295,7 @@ function aiDEL(ac) {
     ac.clxStage = 2;
     ac.aiAt = G.t + rnd(4, 8);
   } else if (ac.clxStage === 2) {
-    ac.say(`Cleared to ${ac.dest.city} via the ${ac.sid.name} then as filed, ${altWords(F.initAlt)}, ${freqWords(F.freqs.APP)}, squawk ${numWords(ac.sqk)}, ${ac.spoken()}.`);
+    ac.say(`Cleared to ${ac.dest.city} via the ${ac.sid.name} then as filed, climb and maintain ${altWords(F.initAlt)}, expect ${altWords(ac.cruise)} one zero minutes after departure, departure frequency ${freqWords(F.freqs.APP)}, squawk ${numWords(ac.sqk)}, ${ac.spoken()}.`);
     ac.clxStage = 3;
     ac.aiAt = G.t + rnd(2, 4);
   } else if (ac.clxStage === 3) {
@@ -355,6 +362,9 @@ function startTaxi(ac) {
   const tx = G.fac.taxi[G.depRwy.id];
   ac.state = "taxi"; ac.stateT = 0;
   ac.taxiPath = tx.path; ac.taxiIdx = 0; ac.ias = 16;
+  /* skip any leading waypoints already behind the stand */
+  while (ac.taxiIdx < ac.taxiPath.length - 1 &&
+         dist2(ac, ac.taxiPath[ac.taxiIdx]) > dist2(ac, ac.taxiPath[ac.taxiIdx + 1])) ac.taxiIdx++;
   if (G.playerPos === "GND") { addPoints(4, `${ac.cs} taxiing to ${G.depRwy.id}`); G.counters.taxi++; }
   G.hooks.strips();
 }
@@ -929,10 +939,28 @@ function wordsToNumbers(text) {
   flush();
   return out.join(" ");
 }
+/* Speech recognisers often write squawk digits as words: "squawk to ate
+   for" for 2 8 4. Fix those homophones inside the squawk phrase only. */
+const SQK_HOMOPHONE = { to: "2", too: "2", two: "2", tu: "2", for: "4", fore: "4", four: "4",
+  ate: "8", eight: "8", won: "1", one: "1", tree: "3", three: "3", fife: "5", five: "5",
+  zero: "0", oh: "0", o: "0", six: "6", seven: "7", nine: "9", niner: "9" };
+function fixSquawkSpeech(s) {
+  return s.replace(/\bsquawk\b((?:\s+[a-z0-9]+){1,6})/g, (m, tail) => {
+    const out = [];
+    for (const tk of tail.trim().split(/\s+/)) {
+      if (/^\d+$/.test(tk)) out.push(tk);
+      else if (tk in SQK_HOMOPHONE) out.push(SQK_HOMOPHONE[tk]);
+      else break;
+      if (out.join("").length >= 4) break;
+    }
+    return out.length ? "squawk " + out.join("") : m;
+  });
+}
+
 function normalizeTx(text) {
   let s = text.toLowerCase().replace(/[.,;:!?/\\'-]+/g, " ").replace(/\s+/g, " ").trim();
   s = s.replace(/\bflight level\b/g, "fl");
-  return wordsToNumbers(s);
+  return fixSquawkSpeech(wordsToNumbers(fixSquawkSpeech(s)));
 }
 
 /* Token-based matcher: joins adjacent tokens so speech transcripts like
@@ -1025,8 +1053,16 @@ function parseClearance(ac, s) {
   const mAlt = s.match(/\b(?:climb(?:\s+and)?(?:\s+maintain)?|maintain)\s+(\d{3,5})\b/);
   if (mAlt && Math.abs(+mAlt[1] - F.initAlt) < 100) clx.alt = true;
   else if (/\bclimb\s+via\s+(?:the\s+)?sid\b/.test(s)) clx.alt = true;
+  /* expected cruise: "expect flight level 340" / "expect 34000, 10 minutes after departure" */
+  const mExp = s.match(/\bexpect(?:\s+final)?(?:\s+altitude)?\s+(?:fl\s*)?(\d{2,5})\b/);
+  if (mExp) {
+    let v = +mExp[1];
+    if (v <= 450) v *= 100;                       // flight level said as 340
+    clx.cruiseSaid = Math.round(v / 100) * 100;
+  }
   const mSqk = s.match(/\bsquawk\s+(\d{4})\b/);
   if (mSqk) { clx.sqkSaid = mSqk[1]; clx.sqkOk = mSqk[1] === ac.sqk; }
+  else if (/\bsquawk\s+\d{1,3}\b/.test(s)) clx.sqkShort = true;
   return clx;
 }
 
@@ -1037,7 +1073,8 @@ function clearanceFlow(ac, s) {
   const missing = [];
   if (!c.dest) missing.push("confirm our destination?");
   if (!c.alt) missing.push("say again the initial altitude?");
-  if (!c.sqkSaid) missing.push("say again the squawk?");
+  if (!c.sqkSaid) missing.push(c.sqkShort ? "say again the squawk, we only caught part of it?"
+                                          : "say again the squawk?");
   if (missing.length) {
     if (!ac.lastAskAt || G.t - ac.lastAskAt > 12) {   // don't nag the same question
       ac.lastAskAt = G.t;
@@ -1062,7 +1099,16 @@ function clearanceFlow(ac, s) {
   }
   if (!c.sqkOk) xmit("DEL", "SYS", "warn", `Strip shows ${ac.cs} was assigned squawk ${ac.sqk}, you said ${c.sqkSaid}.`, null);
   const delay = rnd(2.5, 5);
-  const text = `Cleared to ${ac.dest.city} via the ${ac.sid.name}${c.sid ? "" : ""} then as filed, up to ${altWords(rbAlt)}, ${freqWords(F.freqs.APP)}, squawk ${numWords(rbSqk)}, ${ac.spoken()}.`;
+  let rbCruise = c.cruiseSaid || null;
+  /* the induced error can also land on the expected cruise */
+  if (!ac.rbError && rbCruise && Math.random() < 0.12) {
+    ac.rbError = { field: "expected altitude", right: rbCruise };
+    rbCruise = rbCruise + (Math.random() < 0.5 ? 2000 : -2000);
+  }
+  const text = `Cleared to ${ac.dest.city} via the ${ac.sid.name} then as filed, ` +
+    `climb and maintain ${altWords(rbAlt)}, ` +
+    (rbCruise ? `expect ${altWords(rbCruise)} one zero minutes after departure, ` : "") +
+    `departure frequency ${freqWords(F.freqs.APP)}, squawk ${numWords(rbSqk)}, ${ac.spoken()}.`;
   ac.pendingRb = { due: G.t + delay, text };
 }
 
@@ -1083,7 +1129,9 @@ function verdictReadback(ac, ok) {
       ac.rbError = null;
       addPoints(6, `caught ${ac.cs}'s bad ${e.field} readback`);
       G.counters.clx++;
-      ac.say(`Ah sorry, ${e.field === "squawk" ? "squawk " + numWords(String(e.right)) : altWords(e.right)}, ${ac.spoken()}.`);
+      ac.say(`Ah sorry, ${e.field === "squawk" ? "squawk " + numWords(String(e.right))
+        : e.field === "expected altitude" ? "expect " + altWords(e.right) + " one zero minutes after departure"
+        : altWords(e.right)}, ${ac.spoken()}.`);
       ac.clxStage = 3;
       finishClearance(ac, true);
     } else {
@@ -1436,7 +1484,7 @@ function sendPDC(ac) {
   const delay = rnd(4, 9);
   setTimeout(() => {
     if (ac.remove) return;
-    ac.say(`${ac.spoken()}, PDC received for ${ac.dest.city}, squawking ${numWords(ac.sqk)}.`);
+    ac.say(`${ac.spoken()}, PDC received for ${ac.dest.city}, ${altWords(G.fac.initAlt)} initial, expect ${altWords(ac.cruise)}, squawking ${numWords(ac.sqk)}.`);
     ac.clxStage = 3;
     addPoints(6, `${ac.cs} cleared by PDC`);
     G.counters.clx++;
