@@ -70,9 +70,8 @@ const TTS = {
     this.speaking = true;
     squelch(0.05, 0.06);
     setTimeout(() => {
-      if (this.held) {                       // keyed during the lead-in: put it back
+      if (this.held) {                       // keyed during the lead-in: drop it
         this.speaking = false;
-        this.queue.unshift(item);
         this.current = null;
         return;
       }
@@ -91,7 +90,6 @@ const TTS = {
   
   hold() {
     this.held = true;
-    if (this.current) this.queue.unshift(this.current);
     this.current = null;
     if ("speechSynthesis" in window) speechSynthesis.cancel();
     this.speaking = false;
