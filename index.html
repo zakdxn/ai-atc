@@ -96,7 +96,17 @@ main{flex:1;display:flex;min-height:0}
 .cheatrow i{font-style:normal;font-size:9.5px;color:var(--dim)}
 #intercom{border-top:1px solid var(--edge);padding:6px 8px}
 #intercom .lbl{font-size:10px;color:var(--dim);letter-spacing:.12em;margin-bottom:4px}
-#intercom .btns{display:flex;gap:5px;flex-wrap:wrap}
+#intercom .btns{display:block}
+.llrow{display:flex;align-items:center;gap:5px;margin-bottom:4px}
+.lllbl{font-size:9px;color:var(--dim);letter-spacing:.12em;min-width:38px}
+.llpos{font-size:11px;padding:2px 9px}
+.llpos.on{border-color:var(--cyan);color:var(--cyan);background:#0a1a22}
+.llgrid{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:5px}
+.llreq{font-size:9.5px;padding:3px 5px;text-align:left;line-height:1.2}
+.llreq:hover{border-color:var(--cyan);color:var(--cyan)}
+.llog{border-top:1px solid var(--edge);padding-top:5px;font-size:10.5px;line-height:1.35;max-height:74px;overflow-y:auto}
+.llog .you{color:var(--accent)}
+.llog .ctrl{color:#8ab8ff}
 
 footer{display:flex;gap:8px;padding:8px 12px;background:var(--panel);border-top:1px solid var(--edge);align-items:center}
 footer .freq{color:var(--dim);white-space:nowrap;font-size:12px}
@@ -151,7 +161,7 @@ footer .freq{color:var(--dim);white-space:nowrap;font-size:12px}
 <body>
 
 <header>
-  <span class="title">AI ATC</span><span class="fac" id="build" title="Build number. If this does not match what Claude reports, your browser is serving a cached copy: hard-refresh with Ctrl+Shift+R.">b12</span>
+  <span class="title">AI ATC</span><span class="fac" id="build" title="Build number. If this does not match what Claude reports, your browser is serving a cached copy: hard-refresh with Ctrl+Shift+R.">b14</span>
   <span class="fac" id="facinfo">offline</span>
   <span class="clock" id="clock">00:00:00</span>
   <div class="chips">
@@ -184,7 +194,7 @@ footer .freq{color:var(--dim);white-space:nowrap;font-size:12px}
     <div id="log"></div>
     <div id="cheat"></div>
     <div id="intercom">
-      <div class="lbl">LANDLINES</div>
+      <div class="lbl">LANDLINE COORDINATION</div>
       <div class="btns" id="intbtns"></div>
     </div>
   </aside>
@@ -201,15 +211,17 @@ footer .freq{color:var(--dim);white-space:nowrap;font-size:12px}
 <div class="overlay" id="help"><div class="card" id="helpcard"></div></div>
 <div class="overlay" id="sop"><div class="card" id="sopcard"></div></div>
 <div class="overlay" id="tdls"><div class="card" id="tdlscard"></div></div>
+<div class="overlay" id="debrief"><div class="card" id="debriefcard"></div></div>
 <div class="overlay" id="fp"><div class="card" id="fpcard"></div></div>
 
-<script src="airports.js?v=12"></script>
-<script src="data.js?v=12"></script>
-<script src="audio.js?v=12"></script>
-<script src="engine.js?v=12"></script>
-<script src="geo.js?v=12"></script>
-<script src="views.js?v=12"></script>
-<script src="dcb.js?v=12"></script>
-<script src="app.js?v=12"></script>
+<script src="airports.js?v=14"></script>
+<script src="data.js?v=14"></script>
+<script src="audio.js?v=14"></script>
+<script src="engine.js?v=14"></script>
+<script src="geo.js?v=14"></script>
+<script src="views.js?v=14"></script>
+<script src="dcb.js?v=14"></script>
+<script src="ops.js?v=14"></script>
+<script src="app.js?v=14"></script>
 </body>
 </html>

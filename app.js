@@ -158,7 +158,8 @@ function stripHtml(ac, mine) {
     : "";
   const nxt = nextPosFor(ac);
   return `<div class="fstrip ${ac.role}${sel}" data-id="${ac.id}">
-    <div class="fs-hd"><span class="cs">${ac.cs}</span><span class="cid">${ac.cid}</span>${ho}</div>
+    <div class="fs-hd"><span class="cs">${ac.cs}</span><span class="cid">${ac.cid}</span>${
+      ac.emerg ? `<span class="ho pend">${ac.emerg.id === "nordo" ? "NORDO" : "EMERG"}</span>` : ""}${ho}</div>
     <div class="fs-row">
       <div class="fs-f"><i>BCN</i>${ac.sqk}</div>
       <div class="fs-f"><i>TYP</i>${ac.type}${ac.heavy ? "/H" : ""}</div>
@@ -272,16 +273,31 @@ function renderCheat() {
   });
 }
 
-/* ---------------- intercom buttons ---------------- */
+/* ---------------- landline coordination panel ----------------
+   Pick who you are calling, then what you are calling about. The last
+   exchange stays on screen so you can see what they gave you. */
+let llTarget = null;
 function renderIntercom() {
   const el = document.getElementById("intbtns");
-  el.innerHTML = POSITIONS.filter(p => p !== G.playerPos)
-    .map(p => `<button data-i="${p}">${p}</button>`).join("") +
-    `<select id="intAct">
-      ${Object.entries(LL_REQUESTS).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join("")}
-    </select>`;
-  el.querySelectorAll("button").forEach(b => {
-    b.onclick = () => intercom(b.dataset.i, document.getElementById("intAct").value);
+  if (!G.running) { el.innerHTML = ""; return; }
+  const others = POSITIONS.filter(p => p !== G.playerPos);
+  if (!llTarget || llTarget === G.playerPos) llTarget = others[0];
+  const last = (G.channels.INT || []).slice(-2);
+  el.innerHTML =
+    `<div class="llrow"><span class="lllbl">CALL</span>` +
+    others.map(p => `<button class="llpos ${p === llTarget ? "on" : ""}" data-i="${p}">${p}</button>`).join("") +
+    `</div>` +
+    `<div class="llrow"><span class="lllbl">ABOUT</span></div>` +
+    `<div class="llgrid">` +
+    Object.entries(LL_REQUESTS).map(([k, v]) =>
+      `<button class="llreq" data-r="${k}">${v.label}</button>`).join("") +
+    `</div>` +
+    (last.length ? `<div class="llog">${last.map(r =>
+      `<div class="${r.cls}"><b>${escapeHtml(r.who)}:</b> ${escapeHtml(r.text)}</div>`).join("")}</div>` : "");
+  el.querySelectorAll(".llpos").forEach(b => b.onclick = () => { llTarget = b.dataset.i; renderIntercom(); });
+  el.querySelectorAll(".llreq").forEach(b => b.onclick = () => {
+    intercom(llTarget, b.dataset.r);
+    setTimeout(renderIntercom, 2600);
   });
 }
 
@@ -301,6 +317,7 @@ function renderHeader() {
 
 /* ---------------- engine hooks ---------------- */
 G.hooks.log = (chan, who, cls, text) => {
+  if (chan === "INT") setTimeout(renderIntercom, 30);
   if (chan === activeTab) renderLog();
   else {
     const tab = document.querySelector(`.ftab[data-t="${chan}"]`);
@@ -389,6 +406,19 @@ function beginSession(facIdx, pos, density) {
 }
 
 function endSession() {
+  if (G.running && G.t > 120 && typeof sessionDebrief === "function") {
+    const d = sessionDebrief();
+    document.getElementById("debriefcard").innerHTML = `
+      <h2>POSITION RELIEF BRIEFING</h2>
+      <p class="dimtxt">${G.fac.icao} ${ctrlCallsign(G.playerPos)} · ${G.cfg.name} · ${G.arrRwy.id} arrivals, ${G.depRwy.id} departures</p>
+      <table>${d.rows.map(([k, v]) => `<tr><td>${k}</td><td><b>${v}</b></td></tr>`).join("")}</table>
+      <h4>ASSESSMENT</h4>
+      <p><b style="color:${/Unsafe/.test(d.grade) ? "var(--red)" : "var(--accent)"}">${d.grade}</b></p>
+      <div class="menurow">
+        <button class="bigbtn" onclick="document.getElementById('debrief').classList.remove('open')">CLOSE</button>
+      </div>`;
+    document.getElementById("debrief").classList.add("open");
+  }
   G.running = false;
   TTS.stopAll();
   document.getElementById("menu").classList.add("open");

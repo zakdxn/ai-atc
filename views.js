@@ -149,6 +149,20 @@ function drawSTARS() {
     ctx.setLineDash([]);
   }
 
+  /* weather cells */
+  if (typeof WX !== "undefined") {
+    for (const c of WX.cells) {
+      const [cx, cy] = W2S(c);
+      const rp = c.r * scale;
+      const g = ctx.createRadialGradient(cx, cy, rp * 0.2, cx, cy, rp);
+      g.addColorStop(0, "rgba(200,60,60,.34)");
+      g.addColorStop(0.6, "rgba(190,140,40,.22)");
+      g.addColorStop(1, "rgba(60,120,60,.12)");
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(cx, cy, rp, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
   /* targets, STARS style */
   const blink = Math.floor(performance.now() / 350) % 2 === 0;
   for (const ac of G.aircraft) {
@@ -157,6 +171,8 @@ function drawSTARS() {
     if (x < -80 || y < -60 || x > V.w + 80 || y > V.h + 60) continue;
     const st = pairState(ac);
     let color = ac.owner === G.playerPos ? TRK_GRN : TRK_DIM;
+    if (ac.vfr) color = ac.owner === G.playerPos ? "#7fd8ff" : "#3f7f9f";
+    if (ac.emerg) color = blink ? "#ff4040" : "#ff9090";
     if (st === "prox") color = "#ffa53a";
     if (st === "conf") color = blink ? "#ff5252" : "#7a1f1f";
 
@@ -191,7 +207,7 @@ function drawSTARS() {
     ctx.beginPath(); ctx.moveTo(x + 4, y - 4); ctx.lineTo(bx2 - 2, by2 + 6); ctx.stroke();
     ctx.globalAlpha = 1;
     ctx.fillStyle = G.selected === ac ? "#ffd75e" : color;
-    ctx.fillText(ac.cs + (ac.heavy ? " H" : "") + (ac.medevac ? " M" : ""), bx2, by2);
+    ctx.fillText(ac.cs + (ac.heavy ? " H" : "") + (ac.emerg ? " ✱" : "") + (ac.vfr ? " V" : ""), bx2, by2);
     let l2 = String(Math.round(ac.alt / 100)).padStart(3, "0");
     l2 += ac.targetAlt > ac.alt + 60 ? "↑" : (ac.targetAlt < ac.alt - 60 || ac.app === "established") ? "↓" : " ";
     l2 += " " + String(Math.round(ac.gs() / 10)).padStart(2, "0");

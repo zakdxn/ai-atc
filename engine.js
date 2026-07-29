@@ -291,6 +291,10 @@ function pilotCheckIn(ac) {
       ]));
       break;
     case "APP":
+      if (ac.vfr) {
+        ac.say(`${facSpoken(F)} approach, ${ac.spoken()}, ${ac.type}, ${altWords(Math.round(ac.alt / 100) * 100)}, ${Math.round(ac.distField())} miles ${["north","northeast","east","southeast","south","southwest","west","northwest"][Math.round(norm360(bearingTo({x:0,y:0}, ac)) / 45) % 8]} of the field, request ${ac.vfrReq}.`);
+        break;
+      }
       if (ac.role === "dep") ac.say(pick([
         `${F.tracon}, ${ac.spoken()}, passing ${alt100()} for ${altWords(ac.assignedAlt || F.initAlt)}, ${ac.sid.name} departure.`,
         `Departure, ${ac.spoken()} with you out of ${alt100()}, ${ac.sid.name}.`,
@@ -1307,7 +1311,9 @@ function execOps(ac, ops) {
       case "hdg": {
         const deg = norm360(op.deg) === 0 ? 360 : norm360(op.deg);
         if (op.deg < 1 || op.deg > 360) { unable.push("that heading"); break; }
-        ac.assignedHdg = deg; ac.targetHdg = deg; ac.turnDir = op.dir;
+        ac.assignedHdg = deg;
+        ac.targetHdg = (typeof maybeDeviate === "function") ? maybeDeviate(ac, "hdg", deg) : deg;
+        ac.turnDir = op.dir;
         ac.directFix = null;
         if (ac.app) ac.app = null;
         parts.push(`${op.dir === "L" ? "left " : op.dir === "R" ? "right " : ""}heading ${hdgWords(deg)}`);
@@ -1320,7 +1326,8 @@ function execOps(ac, ops) {
         if (v < 2000 || v > 36000) { unable.push("that altitude"); break; }
         if (ac.app === "established") ac.app = null;
         ac.assignedAlt = v;
-        if (!["gate", "clxOk", "gndCall", "push", "taxiWait", "taxi", "holdShortG", "holdShort", "lineup", "rolling"].includes(ac.state)) ac.targetAlt = v;
+        if (!["gate", "clxOk", "gndCall", "push", "taxiWait", "taxi", "holdShortG", "holdShort", "lineup", "rolling"].includes(ac.state))
+          ac.targetAlt = (typeof maybeDeviate === "function") ? maybeDeviate(ac, "alt", v) : v;
         const verb = v < ac.alt - 50 ? "descend and maintain" : v > ac.alt + 50 ? "climb and maintain" : "maintain";
         parts.push(`${verb} ${altWords(v)}`);
         break;
@@ -1461,7 +1468,10 @@ function execOps(ac, ops) {
           ac.state = "twrArr"; ac.stateT = 0;
           settleHandoff(ac, "TWR");
           setOwner(ac, "TWR", false);
-          if (G.playerPos === "APP") { addPoints(12, `${ac.cs} delivered on the ILS`); G.counters.ils++; }
+          if (G.playerPos === "APP") {
+          addPoints(ac.emerg ? 25 : 12, `${ac.cs} delivered on the ILS${ac.emerg ? " (emergency)" : ""}`);
+          G.counters.ils++;
+        }
         } else unable.push("tower");
         break;
       case "toGnd":
@@ -1559,11 +1569,27 @@ function playerTransmit(raw) {
   G.hooks.strips();
   if (ac.owner !== G.playerPos) { sysLog(`${ac.cs} is not on your frequency (with ${ac.owner}).`); return; }
   if (ac.monitorOnly) { ac.monitorOnly = false; ac.called = true; ac.standbyAt = 0; }
+  if (ac.nordo) { sysLog(`${ac.cs} is NORDO (squawking 7600). No reply.`); return; }
 
   /* ---- broad intent layer: pilots answer questions about themselves ----
      Anything recognisable as a question about state, position, fuel,
      type, gate, route, altitude, speed or intentions gets a real answer
      built from that aircraft's actual situation. */
+  /* verify / confirm an assignment: this is how you catch a deviation */
+  if (/\b(?:verify|confirm|check|say)\b[\w\s]*\b(?:heading|altitude|assigned)\b|\byou'?re\s+(?:off|not\s+on)\b/.test(rest)) {
+    const caught = typeof challengeDeviation === "function" ? challengeDeviation(ac) : null;
+    const reply = caught || (/(heading)/.test(rest)
+      ? `we're on heading ${hdgWords(Math.round(ac.hdg))} as assigned`
+      : `we're assigned ${altWords(ac.assignedAlt || ac.targetAlt)}`);
+    setTimeout(() => { if (!ac.remove) ac.say(`${ac.spoken()}, ${reply}.`); }, rnd(700, 1400));
+    return;
+  }
+  /* a weather deviation request */
+  if (/\bdeviat/.test(rest) && /\bapprove/.test(rest)) {
+    ac.wxAsked = "approved";
+    setTimeout(() => { if (!ac.remove) ac.say(`Deviating, ${ac.spoken()}, we'll advise when able direct.`); }, 900);
+    return;
+  }
   const ANSWER = [
     [/\b(?:status|how.*(?:doing|going)|what.*doing|position\s+check)\b/,
       a => pilotRequest(a)],
@@ -2065,6 +2091,8 @@ function startSession(facIdx, playerPos, density) {
   G.selected = null;
   G.rushPhase = rnd(0, Math.PI * 2);
   tmuClear();
+  if (typeof wxReset === "function") wxReset();
+  opsNext = 240;
   coordAt = 90;
   G.nextEvent = rnd(100, 180);
   nagAt = 120;
@@ -2167,6 +2195,7 @@ function tickEngine(realDt) {
     checkSeparation();
     if (typeof safetyLogicScan === "function") safetyLogicScan();
     tmuTick();
+    if (typeof opsTick === "function") opsTick(0.5);
     coordinationTick();
     intercomNags();
     G.hooks.score();
