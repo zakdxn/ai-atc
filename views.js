@@ -238,8 +238,9 @@ function drawASDX() {
     taxi: sh(N ? "#2b2f34" : ASDX_PVMT, bt), taxiLine: null,
     rwy: "#000", rwyLine: null,
     ramp: sh(N ? "#6a6b70" : "#8f9096", bt), bldg: sh(ASDX_BLDG, bt),
-    label: sh("#c8ccd2", bt), twLabel: sh("#e8c95a", bt), holdBar: "#c8a020",
-    edge: sh(N ? "#3f4a52" : "#5d666e", bt),
+    label: sh("#c8ccd2", bt), twLabel: sh("#f0d264", bt), holdBar: "#d4ac28",
+    rwyEdge: sh("#c8ced6", bt), rwyMark: sh("#eef1f4", bt),
+    centreline: sh("#8d7a2a", bt),
   });
 
   /* safety logic: paint the runway red when occupied with traffic short final */
@@ -305,39 +306,46 @@ function drawASDX() {
 }
 
 /* shared pavement painter for the top-down displays */
+/* =====================================================================
+   Airport surface renderer.
+   Drawn in layers so the picture reads the way a real airport diagram
+   does: aprons flat underneath, taxiways as one continuous surface with
+   painted centrelines, runways on top in black with white markings,
+   hold-short bars where taxiways meet them, and runway numbers painted
+   at each end. Labels are placed with collision avoidance so the field
+   never turns into a wall of letters.
+   ===================================================================== */
+let LBL_TAKEN = [];
+function labelFits(x, y, w, h) {
+  for (const r of LBL_TAKEN) {
+    if (x < r.x + r.w && x + w > r.x && y < r.y + r.h && y + h > r.y) return false;
+  }
+  LBL_TAKEN.push({ x, y, w, h });
+  return true;
+}
+
 function drawPavement(W2S, scale, TH) {
-  /* real pavement polygons where we have them */
+  LBL_TAKEN = [];
   if (G.fac.real && G.fac.pav) {
-    const poly = (flat, fill) => {
+    const fill = (flat, colour) => {
       ctx.beginPath();
       for (let i = 0; i < flat.length; i += 2) {
         const [x, y] = W2S({ x: flat[i], y: flat[i + 1] });
         i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
       }
       ctx.closePath();
-      ctx.fillStyle = fill;
+      ctx.fillStyle = colour;
       ctx.fill();
     };
-    for (const p of G.fac.pav.apr) poly(p, TH.ramp);
-    for (const p of G.fac.pav.twy) poly(p, TH.taxi);
-    /* thin outline so the pavement reads as taxiways instead of one blob */
-    if (TH.edge) {
-      ctx.strokeStyle = TH.edge;
-      ctx.lineWidth = 0.9;
-      for (const p of G.fac.pav.twy) {
-        ctx.beginPath();
-        for (let i = 0; i < p.length; i += 2) {
-          const [x, y] = W2S({ x: p[i], y: p[i + 1] });
-          i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-        }
-        ctx.closePath(); ctx.stroke();
-      }
-    }
-    drawTaxiLabels(W2S, scale, TH);
-    /* the routes in use, drawn as painted centrelines */
-    if (TH.taxiLine) {
-      ctx.strokeStyle = TH.taxiLine;
-      ctx.lineWidth = 1.4;
+    /* 1. aprons and stands */
+    for (const p of G.fac.pav.apr) fill(p, TH.ramp);
+    /* 2. taxiway surface as one continuous shape, no per-piece outlines */
+    for (const p of G.fac.pav.twy) fill(p, TH.taxi);
+    /* 3. painted taxiway centrelines along the routes actually in use */
+    if (TH.centreline) {
+      ctx.strokeStyle = TH.centreline;
+      ctx.lineWidth = Math.max(1.2, scale * 0.004);
+      ctx.lineCap = "round"; ctx.lineJoin = "round";
       for (const key of Object.keys(G.fac.taxi || {})) {
         const t = G.fac.taxi[key];
         const pts = key.startsWith("in_") ? [t.exit, ...t.path] : [G.fac.gates.anchor, ...t.path];
@@ -345,105 +353,141 @@ function drawPavement(W2S, scale, TH) {
         pts.forEach((p, i) => { const [x, y] = W2S(p); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
         ctx.stroke();
       }
+      ctx.lineCap = "butt";
     }
     drawRunways(W2S, scale, TH);
+    drawHoldBars(W2S, scale, TH);
+    drawTaxiLabels(W2S, scale, TH);
     return;
   }
-  /* synthetic network fallback */
+  /* synthetic fallback for the two fields without pavement data */
   ctx.lineCap = "round";
   for (const seg of (G.fac.net || [])) {
     const w = seg.kind === "par" ? Math.max(7, 0.05 * scale)
-            : seg.kind === "conn" ? Math.max(5, 0.04 * scale)
-            : Math.max(6, 0.045 * scale);
-    ctx.strokeStyle = TH.taxi;
-    ctx.lineWidth = w;
+            : seg.kind === "conn" ? Math.max(5, 0.04 * scale) : Math.max(6, 0.045 * scale);
+    ctx.strokeStyle = TH.taxi; ctx.lineWidth = w;
     ctx.beginPath();
     seg.pts.forEach((p, i) => { const [x, y] = W2S(p); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
     ctx.stroke();
-    if (TH.taxiLine) {
-      ctx.strokeStyle = TH.taxiLine;
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      seg.pts.forEach((p, i) => { const [x, y] = W2S(p); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
-      ctx.stroke();
-    }
   }
-  /* hold-short bars where connectors meet the runway */
-  for (const seg of (G.fac.net || [])) {
-    if (seg.kind !== "conn") continue;
-    const [pp, rp] = seg.pts;
-    const hx = pp.x + (rp.x - pp.x) * 0.72, hy = pp.y + (rp.y - pp.y) * 0.72;
-    const dx = rp.x - pp.x, dy = rp.y - pp.y;
-    const dl = Math.hypot(dx, dy) || 1;
-    const px = -dy / dl, py = dx / dl;
-    const [x1, y1] = W2S({ x: hx + px * 0.035, y: hy + py * 0.035 });
-    const [x2, y2] = W2S({ x: hx - px * 0.035, y: hy - py * 0.035 });
-    ctx.strokeStyle = TH.holdBar || "#e0c030";
-    ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
-    ctx.lineWidth = 1;
-  }
-  /* taxiway labels */
-  ctx.font = mono(10);
-  for (const seg of (G.fac.net || [])) {
-    if (!seg.name) continue;
-    const mx = (seg.pts[0].x + seg.pts[1].x) / 2, my = (seg.pts[0].y + seg.pts[1].y) / 2;
-    const [x, y] = W2S({ x: mx, y: my });
-    ctx.fillStyle = TH.twLabel || TH.label;
-    if (seg.kind === "par") {
-      ctx.font = mono(12);
-      ctx.fillText(seg.name, x + 5, y - 5);
-      ctx.font = mono(10);
-    } else {
-      ctx.fillText(seg.name, x + 4, y - 4);
-    }
-  }
-  ctx.font = mono(11);
-  /* ramp + terminal buildings */
+  ctx.lineCap = "butt"; ctx.lineWidth = 1;
   const [gx, gy] = W2S(G.fac.gates.anchor);
   const rw = Math.max(40, 0.5 * scale), rh = Math.max(22, 0.28 * scale);
   ctx.fillStyle = TH.ramp;
   ctx.fillRect(gx - rw / 2, gy - rh / 2, rw, rh);
-  ctx.fillStyle = TH.bldg;
-  ctx.fillRect(gx - rw / 2.6, gy - rh / 6, rw / 1.3, rh / 3);
-  for (let i = 0; i < 4; i++) {
-    ctx.fillRect(gx - rw / 2.6 + i * rw / 5.2, gy - rh / 2.4, rw / 9, rh / 4);
-  }
   drawRunways(W2S, scale, TH);
-  ctx.lineWidth = 1; ctx.lineCap = "butt";
+  for (const seg of (G.fac.net || [])) {
+    if (!seg.name) continue;
+    const mx = (seg.pts[0].x + seg.pts[1].x) / 2, my = (seg.pts[0].y + seg.pts[1].y) / 2;
+    const [x, y] = W2S({ x: mx, y: my });
+    if (!labelFits(x - 8, y - 8, 16, 15)) continue;
+    ctx.fillStyle = "rgba(0,0,0,.55)";
+    ctx.fillRect(x - 8, y - 8, 16, 15);
+    ctx.fillStyle = TH.twLabel || TH.label;
+    ctx.fillText(seg.name, x - 3.5, y + 3.5);
+  }
 }
 
+/* runways: black surface, white edges, threshold bars, aiming points,
+   dashed centreline and the runway number painted at each end */
 function drawRunways(W2S, scale, TH) {
   for (const r of G.fac.runways) {
+    const hwNm = Math.max(r.w || 0.025, 0.018) / 2;
+    const px = Math.cos(d2r(r.hdg)) * hwNm, py = -Math.sin(d2r(r.hdg)) * hwNm;
+    const c = [
+      W2S({ x: r.thr.x + px, y: r.thr.y + py }), W2S({ x: r.end.x + px, y: r.end.y + py }),
+      W2S({ x: r.end.x - px, y: r.end.y - py }), W2S({ x: r.thr.x - px, y: r.thr.y - py }),
+    ];
+    const hwPx = Math.hypot(c[0][0] - c[3][0], c[0][1] - c[3][1]) / 2;
+    /* surface */
+    ctx.beginPath();
+    c.forEach((q, i) => i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]));
+    ctx.closePath();
+    ctx.fillStyle = TH.rwy;
+    ctx.fill();
+    /* white edge lines */
+    ctx.strokeStyle = TH.rwyEdge || "#dfe3e8";
+    ctx.lineWidth = Math.max(0.8, hwPx * 0.07);
+    ctx.beginPath();
+    ctx.moveTo(c[0][0], c[0][1]); ctx.lineTo(c[1][0], c[1][1]);
+    ctx.moveTo(c[2][0], c[2][1]); ctx.lineTo(c[3][0], c[3][1]);
+    ctx.stroke();
+
     const [x1, y1] = W2S(r.thr), [x2, y2] = W2S(r.end);
-    ctx.strokeStyle = TH.rwy;
-    ctx.lineWidth = Math.max(9, (r.w || 0.05) * scale);
-    ctx.lineCap = "butt";
-    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
-    if (TH.rwyLine) {
-      ctx.strokeStyle = TH.rwyLine;
-      ctx.lineWidth = 1;
-      ctx.setLineDash([6, 8]);
-      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
-      ctx.setLineDash([]);
-    }
-    /* threshold bars and a dashed centreline */
-    const hw = Math.max(4, (r.w || 0.05) * scale / 2);
-    const px = Math.cos(d2r(r.hdg)) * hw, py = -Math.sin(d2r(r.hdg)) * hw;
-    ctx.strokeStyle = "#e8e8e8";
-    ctx.lineWidth = Math.max(1.2, hw * 0.14);
-    for (const [ex, ey] of [[x1, y1], [x2, y2]]) {
-      ctx.beginPath(); ctx.moveTo(ex + px, ey - py); ctx.lineTo(ex - px, ey + py); ctx.stroke();
-    }
-    ctx.setLineDash([Math.max(5, hw), Math.max(7, hw * 1.4)]);
-    ctx.lineWidth = Math.max(1, hw * 0.1);
+    const len = Math.hypot(x2 - x1, y2 - y1);
+    if (len < 12) continue;
+    /* dashed centreline */
+    ctx.strokeStyle = TH.rwyMark || "#f2f4f6";
+    ctx.lineWidth = Math.max(0.9, hwPx * 0.09);
+    ctx.setLineDash([Math.max(6, hwPx * 1.6), Math.max(6, hwPx * 1.3)]);
     ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
     ctx.setLineDash([]);
-    ctx.fillStyle = TH.label;
-    ctx.font = mono(Math.max(9, Math.min(14, hw * 0.9)));
-    ctx.fillText(r.id, x1 + 7, y1 - 7);
-    ctx.fillText(r.recip, x2 + 7, y2 - 7);
+    /* threshold stripes and the runway number at each end */
+    const ux = (x2 - x1) / len, uy = (y2 - y1) / len;
+    const nx = -uy, ny = ux;
+    for (const [ex, ey, dir, id] of [[x1, y1, 1, r.id], [x2, y2, -1, r.recip]]) {
+      const bx = ex + ux * dir * hwPx * 0.5, by = ey + uy * dir * hwPx * 0.5;
+      ctx.strokeStyle = TH.rwyMark || "#f2f4f6";
+      ctx.lineWidth = Math.max(0.9, hwPx * 0.11);
+      for (let k = -3; k <= 3; k++) {
+        if (!k) continue;
+        const o = (k / 3.6) * hwPx;
+        ctx.beginPath();
+        ctx.moveTo(bx + nx * o, by + ny * o);
+        ctx.lineTo(bx + nx * o + ux * dir * hwPx * 1.5, by + ny * o + uy * dir * hwPx * 1.5);
+        ctx.stroke();
+      }
+      /* painted designator, rotated to the runway and legible when zoomed in */
+      if (hwPx > 7 && len > 90) {
+        const tx = ex + ux * dir * hwPx * 3.1, ty = ey + uy * dir * hwPx * 3.1;
+        ctx.save();
+        ctx.translate(tx, ty);
+        ctx.rotate(Math.atan2(ux * dir, -uy * dir));
+        ctx.fillStyle = TH.rwyMark || "#f2f4f6";
+        ctx.font = "bold " + mono(Math.min(26, hwPx * 1.25)).slice(0);
+        ctx.textAlign = "center";
+        ctx.fillText(id, 0, hwPx * 0.42);
+        ctx.textAlign = "start";
+        ctx.restore();
+      }
+    }
+    /* chart label beside the threshold, only when the painted one is too small */
+    if (!(hwPx > 7 && len > 90)) {
+      ctx.fillStyle = TH.label;
+      ctx.font = mono(11);
+      if (labelFits(x1 + 5, y1 - 16, 26, 14)) ctx.fillText(r.id, x1 + 6, y1 - 6);
+      if (labelFits(x2 + 5, y2 - 16, 26, 14)) ctx.fillText(r.recip, x2 + 6, y2 - 6);
+    }
     ctx.font = mono(11);
+  }
+  ctx.lineWidth = 1;
+}
+
+/* yellow hold-short bars where the taxi routes meet a runway */
+function drawHoldBars(W2S, scale, TH) {
+  const bars = [];
+  for (const r of G.fac.runways) {
+    const hw = Math.max(r.w || 0.025, 0.018) / 2 + 0.012;
+    const ux = Math.sin(d2r(r.hdg)), uy = Math.cos(d2r(r.hdg));
+    const px = Math.cos(d2r(r.hdg)), py = -Math.sin(d2r(r.hdg));
+    for (const key of Object.keys(G.fac.taxi || {})) {
+      const t = G.fac.taxi[key];
+      const pts = key.startsWith("in_") ? [t.exit, ...t.path] : [G.fac.gates.anchor, ...t.path];
+      for (const p of pts) {
+        const dx = p.x - r.thr.x, dy = p.y - r.thr.y;
+        const along = dx * ux + dy * uy, cross = dx * px + dy * py;
+        if (along < -0.1 || along > r.len + 0.1) continue;
+        if (Math.abs(Math.abs(cross) - hw) > 0.03) continue;
+        bars.push({ x: p.x, y: p.y, px, py });
+      }
+    }
+  }
+  ctx.strokeStyle = TH.holdBar || "#e0c030";
+  ctx.lineWidth = Math.max(1.5, scale * 0.004);
+  for (const b of bars) {
+    const [x1, y1] = W2S({ x: b.x + b.px * 0.02, y: b.y + b.py * 0.02 });
+    const [x2, y2] = W2S({ x: b.x - b.px * 0.02, y: b.y - b.py * 0.02 });
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
   }
   ctx.lineWidth = 1;
 }
@@ -500,9 +544,11 @@ function drawCAB() {
     ramp: night ? "#4a4c50" : "#a8a8ac",
     bldg: night ? "#5c5e64" : "#c4c4c8",
     label: night ? "#e8e8e8" : "#20242a",
-    twLabel: night ? "#f0d060" : "#7a5c10",
+    twLabel: night ? "#f0d060" : "#8a6a12",
     holdBar: "#d9a520",
-    edge: night ? "#55564e" : "#6e6e64",
+    rwyEdge: night ? "#b9bec4" : "#e8ebee",
+    rwyMark: night ? "#d8dce0" : "#f4f6f8",
+    centreline: night ? "#b58f22" : "#d9a520",
   });
 
   /* aircraft */
@@ -673,41 +719,65 @@ canvas.addEventListener("dblclick", () => {
 function drawTaxiLabels(W2S, scale, TH) {
   const F = G.fac;
   if (!F.pav || !F.pav.twy.length) return;
+  /* Build the label set once per facility: group pavement into corridors
+     by orientation and position so a taxiway gets one letter, not one
+     per fragment. */
   if (!F.twyLabels) {
-    const L = ["A", "B", "C", "D", "E", "F", "G", "H", "J", "K", "L", "M", "N", "P", "R", "S", "T", "V", "W"];
-    const cand = [];
-    F.pav.twy.forEach((flat, i) => {
+    const L = ["A", "B", "C", "D", "E", "F", "G", "H", "J", "K", "L", "M", "N", "P", "R", "S", "T", "V", "W", "Y", "Z"];
+    const segs = [];
+    F.pav.twy.forEach(flat => {
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
       for (let k = 0; k < flat.length; k += 2) {
         x0 = Math.min(x0, flat[k]); x1 = Math.max(x1, flat[k]);
         y0 = Math.min(y0, flat[k + 1]); y1 = Math.max(y1, flat[k + 1]);
       }
-      const w = x1 - x0, h = y1 - y0;
-      const span = Math.max(w, h);
-      if (span < 0.13) return;                       // ignore short stubs
-      cand.push({ i, span, c: { x: (x0 + x1) / 2, y: (y0 + y1) / 2 },
-                  horiz: w >= h, x0, y0, x1, y1 });
+      const w = x1 - x0, h = y1 - y0, span = Math.max(w, h);
+      if (span < 0.22) return;                       // ignore fillets and stubs
+      if (Math.min(w, h) / span > 0.6) return;       // ignore blobby aprons
+      segs.push({ span, horiz: w >= h,
+                  cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, x0, y0, x1, y1 });
     });
-    cand.sort((a, b) => b.span - a.span);
-    F.twyLabels = cand.slice(0, L.length).map((o, k) => ({ ...o, name: L[k] }));
+    segs.sort((a, b) => b.span - a.span);
+    /* merge collinear neighbours into one corridor */
+    const corridors = [];
+    for (const s of segs) {
+      const m = corridors.find(c => c.horiz === s.horiz &&
+        Math.abs((s.horiz ? s.cy : s.cx) - (c.horiz ? c.cy : c.cx)) < 0.06);
+      if (m) {
+        m.x0 = Math.min(m.x0, s.x0); m.x1 = Math.max(m.x1, s.x1);
+        m.y0 = Math.min(m.y0, s.y0); m.y1 = Math.max(m.y1, s.y1);
+        m.span = Math.max(m.x1 - m.x0, m.y1 - m.y0);
+      } else if (corridors.length < L.length) {
+        corridors.push({ ...s });
+      }
+    }
+    F.twyLabels = corridors.map((c, i) => ({ ...c, name: L[i] }));
   }
-  ctx.font = mono(Math.max(9, Math.min(15, scale * 0.055)));
+  ctx.font = "bold " + mono(11);
   for (const t of F.twyLabels) {
-    if (t.span * scale < 42) continue;               // too small to letter at this zoom
-    const pts = t.horiz
-      ? [{ x: t.x0 + t.span * 0.25, y: t.c.y }, { x: t.x1 - t.span * 0.25, y: t.c.y }]
-      : [{ x: t.c.x, y: t.y0 + t.span * 0.25 }, { x: t.c.x, y: t.y1 - t.span * 0.25 }];
-    for (const p of pts) {
+    if (t.span * scale < 70) continue;               // too small to letter here
+    /* two marks along the corridor, like a chart */
+    const spots = t.horiz
+      ? [{ x: t.x0 + (t.x1 - t.x0) * 0.28, y: t.cy }, { x: t.x0 + (t.x1 - t.x0) * 0.72, y: t.cy }]
+      : [{ x: t.cx, y: t.y0 + (t.y1 - t.y0) * 0.28 }, { x: t.cx, y: t.y0 + (t.y1 - t.y0) * 0.72 }];
+    for (const p of spots) {
       const [x, y] = W2S(p);
-      if (x < 0 || y < 0 || x > V.w || y > V.h) continue;
-      ctx.fillStyle = "rgba(0,0,0,.55)";
+      if (x < 14 || y < 14 || x > V.w - 14 || y > V.h - 14) continue;
+      if (!labelFits(x - 9, y - 9, 18, 17)) continue;
+      ctx.fillStyle = "#141a10";
       ctx.fillRect(x - 8, y - 8, 16, 15);
+      ctx.strokeStyle = TH.twLabel || "#e8c95a";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x - 8, y - 8, 16, 15);
       ctx.fillStyle = TH.twLabel || "#e8c95a";
-      ctx.fillText(t.name, x - 3.5, y + 3.5);
+      ctx.textAlign = "center";
+      ctx.fillText(t.name, x, y + 4);
+      ctx.textAlign = "start";
     }
   }
   ctx.font = mono(11);
 }
+
 
 /* ---------- secondary ASDE-X windows (TOOLS > NEW WINDOW) ----------
    Each is an independent viewport onto the same surface picture, so you

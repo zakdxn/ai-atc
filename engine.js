@@ -1286,8 +1286,8 @@ function finishClearance(ac, silent) {
 /* ---- generic ops execution with readback ---- */
 /* credit or dock the switch depending on the handoff state, then clear it */
 function settleHandoff(ac, to) {
-  if (ac.hoTo === to && ac.hoAccepted) addPoints(4, `${ac.cs} handed off cleanly to ${to}`);
-  else if (ac.hoTo === to) addPoints(2, `${ac.cs} switched, ${to} had not accepted yet`);
+  if (ac.hoTo && ac.hoAccepted) addPoints(4, `${ac.cs} handed off cleanly to ${to}`);
+  else if (ac.hoTo) addPoints(3, `${ac.cs} switched to ${to}, flash was still pending`);
   else addPoints(2, `${ac.cs} shipped to ${to}`);
   ac.hoTo = null; ac.hoAccepted = false;
 }
@@ -1858,7 +1858,8 @@ function initiateHandoff(ac) {
   if (!to) { sysLog(`${ac.cs} has nowhere further to go from ${ac.owner}.`); return; }
   if (ac.hoTo === to && ac.hoAccepted) { sysLog(`${ac.cs} already accepted by ${to}.`); return; }
   ac.hoTo = to; ac.hoAccepted = false;
-  xmit(G.playerPos, "SYS", "sys", `H/O ${ac.cs} flashed to ${to}. Waiting for acceptance.`, null);
+  chime();
+  xmit(G.playerPos, "SYS", "sys", `H/O ${ac.cs} flashed to ${to}, awaiting acceptance.`, null);
   G.hooks.strips();
   const delay = rnd(2500, 7000) / Math.max(1, G.speed);
   setTimeout(() => {
