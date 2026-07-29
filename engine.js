@@ -200,6 +200,28 @@ class Aircraft {
       this.hdg = this.targetHdg = rnd(0, 360);
       this.state = "gate"; this.owner = "DEL";
       this.callAt = G.t + rnd(4, 25);
+      
+      // GUARANTEE NO SPAWN ON RUNWAY
+      let tries = 0;
+      while (tries < 15) {
+        let bad = false;
+        for (const r of G.fac.runways) {
+          const l2 = Math.pow(r.thr.x - r.end.x, 2) + Math.pow(r.thr.y - r.end.y, 2);
+          if (l2 === 0) continue;
+          let t = ((this.x - r.thr.x) * (r.end.x - r.thr.x) + (this.y - r.thr.y) * (r.end.y - r.thr.y)) / l2;
+          t = Math.max(0, Math.min(1, t));
+          const proj = { x: r.thr.x + t * (r.end.x - r.thr.x), y: r.thr.y + t * (r.end.y - r.thr.y) };
+          if (dist2(this, proj) < 0.04) { // Roughly 240 feet from centerline
+            bad = true; break;
+          }
+        }
+        if (!bad) break;
+        // Bump coordinate outward safely away from center
+        this.x += 0.06; 
+        this.y -= 0.06;
+        tries++;
+      }
+      
     } else {
       this.star = pick(G.fac.stars);
       /* spread arrivals across entry fixes: avoid a gate already occupied far out */
@@ -582,10 +604,10 @@ function aiAPP(ac) {
     const d = dist2(ac, ahead);
     const altDiff = Math.abs(ac.alt - ahead.alt);
 
-    // 1. Proactive Speed Control: Match or drag back speed if catching up
-    if (d < reqGap + 5 && ac.targetIas > 180 && altDiff < 2000) {
-      let newSpd = Math.max(180, Math.floor((ahead.ias - 10) / 10) * 10);
-      if (ac.targetIas !== newSpd && ac.targetIas > newSpd) {
+    // 1. Aggressive Speed Control: Hard clamp speed if catching up
+    if (d < reqGap + 4 && altDiff < 2000) {
+      let newSpd = 160; 
+      if (ac.targetIas > newSpd) {
         ac.targetIas = newSpd;
         ac.assignedSpd = newSpd;
         aiSay("APP", `${ac.spoken()}, reduce speed ${numWords(newSpd)}.`);
@@ -593,16 +615,20 @@ function aiAPP(ac) {
       }
     }
 
-    // 2. Emergency Breakout Vector: If separation is failing early, spin them out immediately
-    if (d < reqGap && altDiff < 1000 && P.stage === 0 && P.mode === "str") {
+    // 2. Safety Net Breakout Vector: If gap is dangerously close to collapsing, instantly break them out
+    if (d < 3.8 && altDiff < 1000 && ac.alt > 1500) {
       P.mode = "dw"; 
       P.side = g.cross >= 0 ? 1 : (Math.random() < 0.5 ? 1 : -1);
-      const hdgOut = norm360((ac.rwy || G.arrRwy).hdg + 180 + 60 * P.side);
-      aiSay("APP", `${ac.spoken()}, traffic alert, turn ${P.side > 0 ? "right" : "left"} heading ${hdgWords(Math.round(hdgOut / 10) * 10)}, vectors for spacing.`);
-      ac.say(`Heading ${hdgWords(Math.round(hdgOut / 10) * 10)}, ${ac.spoken()}.`);
+      P.stage = 0;
+      const hdgOut = norm360((ac.rwy || G.arrRwy).hdg + 180 + 90 * P.side);
+      aiSay("APP", `${ac.spoken()}, traffic alert, turn ${P.side > 0 ? "right" : "left"} heading ${hdgWords(Math.round(hdgOut / 10) * 10)}, climb and maintain four thousand.`);
+      ac.say(`Heading ${hdgWords(Math.round(hdgOut / 10) * 10)}, up to four thousand, ${ac.spoken()}.`);
       ac.targetHdg = Math.round(hdgOut / 10) * 10; 
+      ac.targetAlt = 4000;
+      ac.assignedAlt = 4000;
       ac.directFix = null;
-      ac.aiAt = G.t + 8;
+      ac.app = null;
+      ac.aiAt = G.t + 10;
       return;
     }
   }
