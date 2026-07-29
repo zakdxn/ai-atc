@@ -118,24 +118,25 @@ function declareEmergency(ac, forced) {
 /* NORDO aircraft ignore everything and fly the procedure */
 function nordoStep(ac) {
   if (!ac.nordo) return;
+  
+  // Only override if they haven't locked onto the approach yet
   if (ac.role === "arr" && !ac.app) {
     const R = ac.rwy || G.arrRwy;
     ac.directFix = null;
     ac.targetAlt = Math.min(ac.targetAlt, 3000);
     
     const g = finalGeom(ac, R);
+    const b = { x: Math.sin(d2r(R.hdg + 180)), y: Math.cos(d2r(R.hdg + 180)) };
+    const interceptPt = { x: R.thr.x + b.x * 15, y: R.thr.y + b.y * 15 };
     
-    // If not established on final, actively vector to a 15-mile final intercept point
-    if (g.along > 17 || Math.abs(g.cross) > 1.5) {
-      const b = { x: Math.sin(d2r(R.hdg + 180)), y: Math.cos(d2r(R.hdg + 180)) };
-      const interceptPt = { x: R.thr.x + b.x * 15, y: R.thr.y + b.y * 15 };
-      ac.targetHdg = bearingTo(ac, interceptPt);
+    if (dist2(ac, interceptPt) < 3.0 || (g.along < 18 && Math.abs(g.cross) < 2.5)) {
+      // Close enough to intercept: set a 30-degree cut and permanently clear them for the approach
+      const cut = g.cross > 0 ? norm360(R.hdg - 30) : norm360(R.hdg + 30);
+      ac.targetHdg = cut;
+      ac.app = "cleared";
     } else {
-      // Intercepted final approach course, turn inbound and clear for the approach
-      ac.targetHdg = R.hdg;
-      if (g.along < 18 && Math.abs(g.cross) < 3) {
-        ac.app = "cleared";
-      }
+      // Actively vector to the 15-mile final intercept point
+      ac.targetHdg = bearingTo(ac, interceptPt);
     }
   }
 }
