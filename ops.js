@@ -119,10 +119,11 @@ function declareEmergency(ac, forced) {
 function nordoStep(ac) {
   if (!ac.nordo) return;
   if (ac.role === "arr" && !ac.app) {
+    const arrRwy = ac.rwy || G.arrRwy;
     ac.directFix = null;
-    ac.targetHdg = G.arrRwy.hdg;
+    ac.targetHdg = arrRwy.hdg;
     ac.targetAlt = Math.min(ac.targetAlt, 3000);
-    if (finalGeom(ac, G.arrRwy).along < 18 && Math.abs(finalGeom(ac, G.arrRwy).cross) < 3) {
+    if (finalGeom(ac, arrRwy).along < 18 && Math.abs(finalGeom(ac, arrRwy).cross) < 3) {
       ac.app = "cleared";
     }
   }

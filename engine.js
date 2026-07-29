@@ -1500,6 +1500,10 @@ function execOps(ac, ops) {
         if (ac.role !== "dep" || ac.state !== "holdShort") { unable.push("line up"); break; }
         const lRwy = op.rwy ? resolveRwy(op.rwy) : (ac.rwy || G.depRwy);
         if (!lRwy) { unable.push(`runway ${op.rwy}`); break; }
+        
+        const held = tmuHold(ac);
+        if (held) { unable.push(`line up, we're holding for ${held}`); break; }
+
         if (typeof isRwyClosed === "function" && isRwyClosed(lRwy.id)) {
           unable.push(`line up, runway ${rwyWords(lRwy.id)} is closed`); break;
         }
@@ -1703,7 +1707,7 @@ function playerTransmit(raw) {
     [/\bsay\s+(?:your\s+)?(?:squawk|beacon|code)\b|\bconfirm\s+squawk\b/,
       a => `squawking ${numWords(a.sqk)}`],
     [/\bsay\s+(?:your\s+)?(?:destination|going)\b|\bconfirm\s+destination\b/,
-      a => a.role === "dep" ? `we're going to ${a.dest.city}` : `we're landing here, out of ${a.origin.city}`],
+      a => a.role === "dep" ? `we're going to ${ac.dest.city}` : `we're landing here, out of ${ac.origin.city}`],
     [/\bsay\s+(?:your\s+)?fuel\b|\bhow.*fuel\b|\bfuel\s+(?:state|remaining)\b/,
       a => `we've got about ${numWords(Math.floor(rnd(45, 180)))} minutes of fuel`],
     [/\bsouls\s+on\s+board\b|\bpob\b/,
@@ -1902,9 +1906,11 @@ function tmuRoll() {
   } else if (roll < 0.8 && !TMU.gdp) {
     TMU.gdp = { until: G.t + rnd(900, 1800) };
     for (const a of G.aircraft) {
-      if (a.role === "dep" && !TMU.edct.has(a.cs)) TMU.edct.set(a.cs, G.t + rnd(120, 600));
+      if (a.role === "dep" && (a.state === "gate" || a.state === "gndCall") && !TMU.edct.has(a.cs)) {
+        TMU.edct.set(a.cs, G.t + rnd(120, 600));
+      }
     }
-    tmuSay("Traffic management: ground delay programme in effect. Departures will be issued wheels-up times.");
+    tmuSay("Traffic management: ground delay programme in effect. Departures still at the gate will be issued wheels-up times.");
   }
 }
 /* is this departure allowed to go right now? */
@@ -1939,11 +1945,11 @@ function coordinationTick() {
   /* about to launch with an arrival close in: approach coordinates */
   if (P === "TWR" || P === "GND") {
     const inbound = G.aircraft.find(a => a.role === "arr" && a.app === "established" &&
-      finalGeom(a, ac.rwy || G.arrRwy).along < 9 && finalGeom(a, ac.rwy || G.arrRwy).along > 3);
+      finalGeom(a, a.rwy || G.arrRwy).along < 9 && finalGeom(a, a.rwy || G.arrRwy).along > 3);
     const ready = G.aircraft.filter(a => a.role === "dep" &&
       ["holdShort", "holdShortG", "lineup"].includes(a.state));
     if (inbound && ready.length && Math.random() < 0.7) {
-      const mi = Math.round(finalGeom(inbound, ac.rwy || G.arrRwy).along);
+      const mi = Math.round(finalGeom(inbound, inbound.rwy || G.arrRwy).along);
       landlineChime();
       xmit("INT", ctrlCallsign("APP"), "ctrl",
         pick([
@@ -2024,15 +2030,15 @@ function initiateHandoff(ac) {
    actually make: approval requests for release, runway crossings,
    point-outs, handoff coordination and traffic calls. */
 const LL_REQUESTS = {
-  status:   { label: "how's it looking",       to: p => p },
-  apreq:    { label: "APREQ / call for release", to: () => "APP" },
-  cross:    { label: "request runway crossing", to: () => "TWR" },
-  space_arr:{ label: "request increased arrival spacing", to: () => "APP" },
-  tighten_arr:{ label: "request reduced arrival spacing", to: () => "APP" },
-  pointout: { label: "point out (selected)",   to: p => p },
-  handoff:  { label: "coordinate handoff (selected)", to: p => p },
-  traffic:  { label: "traffic call (selected)", to: p => p },
-  restrict: { label: "request a restriction",  to: () => "APP" },
+  status:      { label: "how's it looking",       to: p => p },
+  apreq:       { label: "APREQ / call for release", to: () => "APP" },
+  cross:       { label: "request runway crossing", to: () => "TWR" },
+  space_arr:   { label: "request increased arrival spacing", to: () => "APP" },
+  tighten_arr: { label: "request reduced arrival spacing", to: () => "APP" },
+  pointout:    { label: "point out (selected)",   to: p => p },
+  handoff:     { label: "coordinate handoff (selected)", to: p => p },
+  traffic:     { label: "traffic call (selected)", to: p => p },
+  restrict:    { label: "request a restriction",  to: () => "APP" },
 };
 
 function intercom(pos, action) {

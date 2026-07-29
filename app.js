@@ -161,6 +161,9 @@ function stripHtml(ac, mine) {
   const edctStr = (typeof TMU !== "undefined" && TMU.edct.has(ac.cs) && G.t < TMU.edct.get(ac.cs)) 
     ? `<div class="fs-rte" style="color:var(--orange)"><i>EDCT</i>${fmtClock(TMU.edct.get(ac.cs))}</div>` : "";
 
+  const R = ac.rwy || (ac.role === "dep" ? G.depRwy : G.arrRwy);
+  const rwyOverrideStr = ac.rwy ? ` <span style="color:var(--orange); font-weight:bold;">[RWY ${R.id}]</span>` : "";
+
   return `<div class="fstrip ${ac.role}${sel}" data-id="${ac.id}">
     <div class="fs-hd"><span class="cs">${ac.cs}</span><span class="cid">${ac.cid}</span>${
       ac.emerg ? `<span class="ho pend">${ac.emerg.id === "nordo" ? "NORDO" : "EMERG"}</span>` : ""}${ho}</div>
@@ -179,7 +182,7 @@ function stripHtml(ac, mine) {
     ${ac.rmk ? `<div class="fs-rte"><i>RMK</i>${ac.rmk}</div>` : ""}
     ${edctStr}
     <div class="fs-ft">
-      <span class="st">${stateLabel(ac)} · ${alt}→${asg}${ac.role === "dep" ? " · gate " + ac.gate : ""}</span>
+      <span class="st">${stateLabel(ac)} · ${alt}→${asg}${ac.role === "dep" ? " · gate " + ac.gate : ""}${rwyOverrideStr}</span>
       ${nxt ? `<button class="hobtn" data-ho="${ac.id}" title="Flash this strip to ${nxt} (handoff)">H/O ${nxt}</button>` : ""}
     </div>
   </div>`;
@@ -221,8 +224,10 @@ function renderCheat() {
   if (!el || !G.running) return;
   const F = G.fac, P = G.playerPos;
   const sel = G.selected && !G.selected.remove ? G.selected : null;
-  const depRoute = (F.taxi && F.taxi[G.depRwy.id]) ? F.taxi[G.depRwy.id].names : "";
-  const arrRoute = (F.taxi && F.taxi["in_" + G.arrRwy.id]) ? F.taxi["in_" + G.arrRwy.id].names : "";
+  const depId = (sel && sel.rwy) ? sel.rwy.id : G.depRwy.id;
+  const arrId = (sel && sel.rwy) ? sel.rwy.id : G.arrRwy.id;
+  const depRoute = (F.taxi && F.taxi[depId]) ? F.taxi[depId].names : "";
+  const arrRoute = (F.taxi && F.taxi["in_" + arrId]) ? F.taxi["in_" + arrId].names : "";
   const lines = {
     DEL: [
       [`cleared to [dest], [SID] departure then as filed, climb and maintain ${F.initAlt}, expect [ALT on strip], departure frequency ${depFreq(F)}, squawk [BCN]`, "the full clearance"],
@@ -233,7 +238,7 @@ function renderCheat() {
     ],
     GND: [
       ["pushback approved", "they are at the gate asking to push"],
-      [`taxi runway ${G.depRwy.id} via ${depRoute}, hold short`, "departures. Just say \u201ctaxi\u201d and the route is filled in"],
+      [`taxi runway ${depId} via ${depRoute}, hold short`, "departures. Just say \u201ctaxi\u201d and the route is filled in"],
       [`taxi to the gate via ${arrRoute}`, "arrivals off the runway"],
       ["monitor ground, I'll call you for taxi", "STOPS THEM CALLING. You initiate taxi in your order."],
       ["number 2", "sequence them so they stop calling"],
@@ -242,9 +247,9 @@ function renderCheat() {
       ["contact tower", "once they are holding short"],
     ],
     TWR: [
-      ["line up and wait", `runway ${G.depRwy.id}`],
-      ["cleared for takeoff", `runway ${G.depRwy.id}`],
-      ["cleared to land", `runway ${G.arrRwy.id}`],
+      ["line up and wait", `runway ${depId}`],
+      ["cleared for takeoff", `runway ${depId}`],
+      ["cleared to land", `runway ${arrId}`],
       ["contact departure", "climbing through about 700 ft"],
       ["contact ground", "after they clear the runway"],
       ["go around", "if the runway is not going to be clear"],
@@ -252,7 +257,7 @@ function renderCheat() {
     APP: [
       ["turn left heading 270, descend and maintain 4000", "vectors to the final"],
       ["reduce speed 210", "spacing"],
-      [`cleared ILS runway ${G.arrRwy.id}`, "30 degrees or less, at or below 3000 by 10 miles"],
+      [`cleared ILS runway ${arrId}`, "30 degrees or less, at or below 3000 by 10 miles"],
       ["contact tower", "established and inside 6 miles"],
       ["climb and maintain 12000, direct [exit fix]", "departures"],
       ["contact center", "above 4000 and 12 miles out"],
@@ -266,7 +271,7 @@ function renderCheat() {
     ],
   }[P] || [];
   el.innerHTML =
-    `<div class="lbl">WHAT ${P} SAYS &nbsp;<span class="dimtxt">RWY ${G.arrRwy.id} ARR / ${G.depRwy.id} DEP</span></div>` +
+    `<div class="lbl">WHAT ${P} SAYS &nbsp;<span class="dimtxt">RWY ${arrId} ARR / ${depId} DEP</span></div>` +
     (sel ? `<div class="cheatsel">${sel.cs}: <b>${pilotRequest(sel)}</b></div>` : "") +
     lines.map(([cmd, why]) =>
       `<div class="cheatrow" data-cmd="${escapeHtml(cmd)}"><code>${escapeHtml(cmd)}</code><i>${escapeHtml(why)}</i></div>`).join("");

@@ -314,34 +314,38 @@ function besideRunway(fac, R, f, off) {
   return { x: p.x + perp.x * off * s, y: p.y + perp.y * off * s };
 }
 
-function prepareRoutes(fac, arrId, depId) {
+function prepareRoutes(fac) {
   if (!fac.real) return;                       // synthetic fields keep their network
   const g = buildGrid(fac);
   const anchor = fac.gates.anchor;
   fac.taxi = fac.taxi || {};
 
-  /* departure: ramp to the hold short of the departure runway threshold */
-  const D = rwyRec(fac, depId);
-  if (D) {
-    const hs = besideRunway(fac, D, 0.03, Math.max(D.w, 0.02) / 2 + 0.055);
-    const s = snapCell(g, anchor), e = snapCell(g, hs);
-    let path = (s && e) ? smooth(g, gridPath(g, s, e)) : null;
-    if (!path || path.length < 2) path = [anchor, hs];
-    fac.taxi[depId] = { names: routeName(fac, path, depId), path: path.slice(1) };
-    fac.taxi[depId].holdShort = path[path.length - 1];
-  }
-  /* arrival: a midfield exit back to the ramp */
-  const A = rwyRec(fac, arrId);
-  if (A) {
-    const exit = besideRunway(fac, A, 0.62, Math.max(A.w, 0.02) / 2 + 0.05);
-    const s = snapCell(g, exit), e = snapCell(g, anchor);
-    let path = (s && e) ? smooth(g, gridPath(g, s, e)) : null;
-    if (!path || path.length < 2) path = [exit, anchor];
-    fac.taxi["in_" + arrId] = {
-      names: routeName(fac, path, arrId),
-      exit: path[0],
-      path: path.slice(1),
-    };
+  /* Generate taxiways to EVERY runway end, not just the active ones, 
+     so dynamic runway reassignments work seamlessly */
+  for (const r of fac.runways) {
+    for (const id of [r.id, r.recip]) {
+      const rec = rwyRec(fac, id);
+      if (!rec) continue;
+      
+      // Departure: ramp to the hold short of the departure runway threshold
+      const hs = besideRunway(fac, rec, 0.03, Math.max(rec.w, 0.02) / 2 + 0.055);
+      const sDep = snapCell(g, anchor), eDep = snapCell(g, hs);
+      let pathDep = (sDep && eDep) ? smooth(g, gridPath(g, sDep, eDep)) : null;
+      if (!pathDep || pathDep.length < 2) pathDep = [anchor, hs];
+      fac.taxi[id] = { names: routeName(fac, pathDep, id), path: pathDep.slice(1) };
+      fac.taxi[id].holdShort = pathDep[pathDep.length - 1];
+
+      // Arrival: a midfield exit back to the ramp
+      const exit = besideRunway(fac, rec, 0.62, Math.max(rec.w, 0.02) / 2 + 0.05);
+      const sArr = snapCell(g, exit), eArr = snapCell(g, anchor);
+      let pathArr = (sArr && eArr) ? smooth(g, gridPath(g, sArr, eArr)) : null;
+      if (!pathArr || pathArr.length < 2) pathArr = [exit, anchor];
+      fac.taxi["in_" + id] = {
+        names: routeName(fac, pathArr, id),
+        exit: pathArr[0],
+        path: pathArr.slice(1),
+      };
+    }
   }
 }
 
