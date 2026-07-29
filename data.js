@@ -682,3 +682,99 @@ const FACILITY_SPECS = [
 
 const FACILITIES = [...HAND_FACILITIES, ...FACILITY_SPECS.map(makeFacility)]
   .sort((a, b) => a.artcc.localeCompare(b.artcc));
+
+/* =====================================================================
+   Taxiway network builder. Runs over every facility (hand-built and
+   generated) and replaces its taxi routes with a proper named network:
+   a full-length parallel taxiway for each active runway (Alpha, Bravo,
+   ...), numbered connectors at the ends and midfield (A1..A4) with
+   hold-short bars, and ramp links. Ground instructions cite the real
+   segment names and the displays label every segment.
+   ===================================================================== */
+const LTR_SEQ = ["A", "B", "C", "D", "E", "F", "G"];
+const LTR_PHON = { A: "Alpha", B: "Bravo", C: "Charlie", D: "Delta", E: "Echo", F: "Foxtrot", G: "Golf" };
+const CONN_NUM = ["one", "two", "three", "four"];
+
+function buildTaxiNetwork(fac) {
+  const rad = d => d * Math.PI / 180;
+  const anchor = fac.gates.anchor;
+  const used = [];
+  for (const c of fac.configs) for (const id of [c.dep, c.arr]) {
+    const rec = fac.runways.find(r => r.id === id || r.recip === id);
+    if (rec && !used.includes(rec)) used.push(rec);
+  }
+  fac.net = [];
+  fac.taxi = {};
+  const FR = [0, 0.35, 0.65, 1];
+  const info = new Map();
+
+  used.forEach((rec, i) => {
+    const L = LTR_SEQ[i % LTR_SEQ.length];
+    const perp = { x: Math.cos(rad(rec.hdg)), y: -Math.sin(rad(rec.hdg)) };
+    const mid = { x: (rec.thr.x + rec.end.x) / 2, y: (rec.thr.y + rec.end.y) / 2 };
+    const s = Math.sign((anchor.x - mid.x) * perp.x + (anchor.y - mid.y) * perp.y) || 1;
+    const off = 0.11 * s;
+    const TA = { x: rec.thr.x + perp.x * off, y: rec.thr.y + perp.y * off };
+    const TB = { x: rec.end.x + perp.x * off, y: rec.end.y + perp.y * off };
+    fac.net.push({ kind: "par", name: L, pts: [TA, TB] });
+    const conns = FR.map((f, k) => {
+      const rp = { x: rec.thr.x + (rec.end.x - rec.thr.x) * f, y: rec.thr.y + (rec.end.y - rec.thr.y) * f };
+      const pp = { x: TA.x + (TB.x - TA.x) * f, y: TA.y + (TB.y - TA.y) * f };
+      fac.net.push({ kind: "conn", name: L + (k + 1), pts: [pp, rp] });
+      return { f, rp, pp, name: L + (k + 1) };
+    });
+    const bx = TB.x - TA.x, by = TB.y - TA.y;
+    let t = ((anchor.x - TA.x) * bx + (anchor.y - TA.y) * by) / (bx * bx + by * by);
+    t = Math.max(0.08, Math.min(0.92, t));
+    const join = { x: TA.x + bx * t, y: TA.y + by * t };
+    fac.net.push({ kind: "ramp", name: "", pts: [anchor, join] });
+    info.set(rec, { L, TA, TB, conns, joinT: t, join });
+  });
+
+  const parPt = (m, f) => ({ x: m.TA.x + (m.TB.x - m.TA.x) * f, y: m.TA.y + (m.TB.y - m.TA.y) * f });
+  const resolve = id => {
+    for (const r of fac.runways) {
+      if (r.id === id) return { rec: r, rev: false };
+      if (r.recip === id) return { rec: r, rev: true };
+    }
+    return null;
+  };
+
+  for (const c of fac.configs) {
+    { /* outbound: ramp, parallel, hold short at the departure end */
+      const { rec, rev } = resolve(c.dep);
+      const m = info.get(rec);
+      const endF = rev ? 1 : 0;
+      const conn = m.conns[rev ? 3 : 0];
+      const path = [m.join];
+      const dirSign = endF > m.joinT ? 1 : -1;
+      const mids = FR.filter(f => dirSign > 0 ? f > m.joinT && f < endF - 0.01 : f < m.joinT && f > endF + 0.01)
+                     .sort((a, b) => dirSign > 0 ? a - b : b - a);
+      for (const f of mids) path.push(parPt(m, f));
+      path.push(parPt(m, endF));
+      path.push({ x: conn.pp.x + (conn.rp.x - conn.pp.x) * 0.5, y: conn.pp.y + (conn.rp.y - conn.pp.y) * 0.5 });
+      if (!fac.taxi[c.dep]) fac.taxi[c.dep] = {
+        names: `${LTR_PHON[m.L]}, ${LTR_PHON[m.L]} ${CONN_NUM[rev ? 3 : 0]}`,
+        path,
+      };
+    }
+    { /* inbound: midfield exit, parallel, ramp */
+      const { rec, rev } = resolve(c.arr);
+      const m = info.get(rec);
+      const exitF = rev ? 0.35 : 0.65;
+      const conn = m.conns[rev ? 1 : 2];
+      const exit = { x: conn.rp.x + (conn.pp.x - conn.rp.x) * 0.2, y: conn.rp.y + (conn.pp.y - conn.rp.y) * 0.2 };
+      const path = [conn.pp];
+      const dirSign = m.joinT > exitF ? 1 : -1;
+      const mids = FR.filter(f => dirSign > 0 ? f > exitF && f < m.joinT : f < exitF && f > m.joinT)
+                     .sort((a, b) => dirSign > 0 ? a - b : b - a);
+      for (const f of mids) path.push(parPt(m, f));
+      path.push(m.join);
+      if (!fac.taxi["in_" + c.arr]) fac.taxi["in_" + c.arr] = {
+        names: `${LTR_PHON[m.L]} ${CONN_NUM[rev ? 1 : 2]}, ${LTR_PHON[m.L]}`,
+        exit, path,
+      };
+    }
+  }
+}
+FACILITIES.forEach(buildTaxiNetwork);

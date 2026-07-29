@@ -229,6 +229,7 @@ function drawASDX() {
   drawPavement(W2S, scale, {
     taxi: ASDX_PVMT, taxiLine: null, rwy: "#000", rwyLine: null,
     ramp: "#8f9096", bldg: ASDX_BLDG, label: "#c8ccd2",
+    twLabel: "#e8c95a", holdBar: "#c8a020",
   });
 
   /* safety logic: paint the runway red when occupied with traffic short final */
@@ -292,24 +293,85 @@ function drawDCB(labels) {
 
 /* shared pavement painter for the top-down displays */
 function drawPavement(W2S, scale, TH) {
-  /* taxiway ribbons */
+  /* real pavement polygons where we have them */
+  if (G.fac.real && G.fac.pav) {
+    const poly = (flat, fill) => {
+      ctx.beginPath();
+      for (let i = 0; i < flat.length; i += 2) {
+        const [x, y] = W2S({ x: flat[i], y: flat[i + 1] });
+        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      }
+      ctx.closePath();
+      ctx.fillStyle = fill;
+      ctx.fill();
+    };
+    for (const p of G.fac.pav.apr) poly(p, TH.ramp);
+    for (const p of G.fac.pav.twy) poly(p, TH.taxi);
+    /* the routes in use, drawn as painted centrelines */
+    if (TH.taxiLine) {
+      ctx.strokeStyle = TH.taxiLine;
+      ctx.lineWidth = 1.4;
+      for (const key of Object.keys(G.fac.taxi || {})) {
+        const t = G.fac.taxi[key];
+        const pts = key.startsWith("in_") ? [t.exit, ...t.path] : [G.fac.gates.anchor, ...t.path];
+        ctx.beginPath();
+        pts.forEach((p, i) => { const [x, y] = W2S(p); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+        ctx.stroke();
+      }
+    }
+    drawRunways(W2S, scale, TH);
+    return;
+  }
+  /* synthetic network fallback */
   ctx.lineCap = "round";
-  for (const key of Object.keys(G.fac.taxi)) {
-    const t = G.fac.taxi[key];
-    const path = key.startsWith("in_") ? [t.exit, ...t.path, G.fac.gates.anchor] : [G.fac.gates.anchor, ...t.path];
+  for (const seg of (G.fac.net || [])) {
+    const w = seg.kind === "par" ? Math.max(7, 0.05 * scale)
+            : seg.kind === "conn" ? Math.max(5, 0.04 * scale)
+            : Math.max(6, 0.045 * scale);
     ctx.strokeStyle = TH.taxi;
-    ctx.lineWidth = Math.max(6, 0.045 * scale);
+    ctx.lineWidth = w;
     ctx.beginPath();
-    path.forEach((p, i) => { const [x, y] = W2S(p); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    seg.pts.forEach((p, i) => { const [x, y] = W2S(p); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
     ctx.stroke();
     if (TH.taxiLine) {
       ctx.strokeStyle = TH.taxiLine;
       ctx.lineWidth = 1.2;
       ctx.beginPath();
-      path.forEach((p, i) => { const [x, y] = W2S(p); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      seg.pts.forEach((p, i) => { const [x, y] = W2S(p); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
       ctx.stroke();
     }
   }
+  /* hold-short bars where connectors meet the runway */
+  for (const seg of (G.fac.net || [])) {
+    if (seg.kind !== "conn") continue;
+    const [pp, rp] = seg.pts;
+    const hx = pp.x + (rp.x - pp.x) * 0.72, hy = pp.y + (rp.y - pp.y) * 0.72;
+    const dx = rp.x - pp.x, dy = rp.y - pp.y;
+    const dl = Math.hypot(dx, dy) || 1;
+    const px = -dy / dl, py = dx / dl;
+    const [x1, y1] = W2S({ x: hx + px * 0.035, y: hy + py * 0.035 });
+    const [x2, y2] = W2S({ x: hx - px * 0.035, y: hy - py * 0.035 });
+    ctx.strokeStyle = TH.holdBar || "#e0c030";
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    ctx.lineWidth = 1;
+  }
+  /* taxiway labels */
+  ctx.font = mono(10);
+  for (const seg of (G.fac.net || [])) {
+    if (!seg.name) continue;
+    const mx = (seg.pts[0].x + seg.pts[1].x) / 2, my = (seg.pts[0].y + seg.pts[1].y) / 2;
+    const [x, y] = W2S({ x: mx, y: my });
+    ctx.fillStyle = TH.twLabel || TH.label;
+    if (seg.kind === "par") {
+      ctx.font = mono(12);
+      ctx.fillText(seg.name, x + 5, y - 5);
+      ctx.font = mono(10);
+    } else {
+      ctx.fillText(seg.name, x + 4, y - 4);
+    }
+  }
+  ctx.font = mono(11);
   /* ramp + terminal buildings */
   const [gx, gy] = W2S(G.fac.gates.anchor);
   const rw = Math.max(40, 0.5 * scale), rh = Math.max(22, 0.28 * scale);
@@ -320,12 +382,16 @@ function drawPavement(W2S, scale, TH) {
   for (let i = 0; i < 4; i++) {
     ctx.fillRect(gx - rw / 2.6 + i * rw / 5.2, gy - rh / 2.4, rw / 9, rh / 4);
   }
-  /* runways */
+  drawRunways(W2S, scale, TH);
+  ctx.lineWidth = 1; ctx.lineCap = "butt";
+}
+
+function drawRunways(W2S, scale, TH) {
   for (const r of G.fac.runways) {
-    const active = [G.arrRwy.id, G.depRwy.id].some(id => r.id === id || r.recip === id);
     const [x1, y1] = W2S(r.thr), [x2, y2] = W2S(r.end);
     ctx.strokeStyle = TH.rwy;
-    ctx.lineWidth = Math.max(9, 0.06 * scale);
+    ctx.lineWidth = Math.max(9, (r.w || 0.05) * scale);
+    ctx.lineCap = "butt";
     ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
     if (TH.rwyLine) {
       ctx.strokeStyle = TH.rwyLine;
@@ -337,9 +403,8 @@ function drawPavement(W2S, scale, TH) {
     ctx.fillStyle = TH.label;
     ctx.fillText(r.id, x1 + 6, y1 - 6);
     ctx.fillText(r.recip, x2 + 6, y2 - 6);
-    if (!active) { /* nothing extra */ }
   }
-  ctx.lineWidth = 1; ctx.lineCap = "butt";
+  ctx.lineWidth = 1;
 }
 
 function drawPlaneIcon(x, y, hdg, color, sel) {
@@ -394,6 +459,8 @@ function drawCAB() {
     ramp: night ? "#4a4c50" : "#a8a8ac",
     bldg: night ? "#5c5e64" : "#c4c4c8",
     label: night ? "#e8e8e8" : "#20242a",
+    twLabel: night ? "#f0d060" : "#7a5c10",
+    holdBar: "#d9a520",
   });
 
   /* aircraft */

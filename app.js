@@ -139,7 +139,44 @@ function escapeHtml(s) {
   return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-/* ---------------- strips ---------------- */
+/* ---------------- flight strips (vNAS/VATSIM layout) ---------------- */
+function stripHtml(ac, mine) {
+  const sel = G.selected === ac ? " sel" : "";
+  if (!mine) {
+    return `<div class="strip compact ${ac.role}${sel}" data-id="${ac.id}">
+      <span class="cs">${ac.cs}</span><span>${stateLabel(ac)}</span></div>`;
+  }
+  const alt = ac.alt < 50 ? "GND" : String(Math.round(ac.alt / 100)).padStart(3, "0");
+  const asg = ac.assignedAlt ? String(Math.round(ac.assignedAlt / 100)).padStart(3, "0") : "---";
+  const dep = ac.role === "dep" ? G.fac.icao : ac.origin.icao;
+  const dst = ac.role === "dep" ? ac.dest.icao : G.fac.icao;
+  const spd = ac.assignedSpd ? String(ac.assignedSpd) : "";
+  const ho = ac.hoTo
+    ? `<span class="ho ${ac.hoAccepted ? "ok" : "pend"}">H/O ${ac.hoTo}${ac.hoAccepted ? " ✓" : " …"}</span>`
+    : "";
+  const nxt = nextPosFor(ac);
+  return `<div class="fstrip ${ac.role}${sel}" data-id="${ac.id}">
+    <div class="fs-hd"><span class="cs">${ac.cs}</span><span class="cid">${ac.cid}</span>${ho}</div>
+    <div class="fs-row">
+      <div class="fs-f"><i>BCN</i>${ac.sqk}</div>
+      <div class="fs-f"><i>TYP</i>${ac.type}${ac.heavy ? "/H" : ""}</div>
+      <div class="fs-f"><i>EQ</i>${ac.eq}</div>
+    </div>
+    <div class="fs-row">
+      <div class="fs-f"><i>DEP</i>${dep}</div>
+      <div class="fs-f"><i>DEST</i>${dst}</div>
+      <div class="fs-f"><i>SPD</i>${spd || "—"}</div>
+      <div class="fs-f"><i>ALT</i>${String(Math.round(ac.cruise / 100))}</div>
+    </div>
+    <div class="fs-rte"><i>RTE</i>${ac.route || ""}</div>
+    ${ac.rmk ? `<div class="fs-rte"><i>RMK</i>${ac.rmk}</div>` : ""}
+    <div class="fs-ft">
+      <span class="st">${stateLabel(ac)} · ${alt}→${asg}${ac.role === "dep" ? " · gate " + ac.gate : ""}</span>
+      ${nxt ? `<button class="hobtn" data-ho="${ac.id}" title="Flash this strip to ${nxt} (handoff)">H/O ${nxt}</button>` : ""}
+    </div>
+  </div>`;
+}
+
 function renderStrips() {
   const el = document.getElementById("stripbay");
   if (!G.running) { el.innerHTML = ""; return; }
@@ -148,31 +185,22 @@ function renderStrips() {
   for (const pos of order) {
     const list = G.aircraft.filter(a => a.owner === pos && !a.remove && a.state !== "out");
     html += `<h3><span${pos === G.playerPos ? ' class="me"' : ""}>${pos === G.playerPos ? "▶ " : ""}${pos} · ${POS_NAME[pos].toUpperCase()}</span><span>${list.length}</span></h3>`;
-    for (const ac of list) {
-      const sel = G.selected === ac ? " sel" : "";
-      if (pos === G.playerPos) {
-        const route = ac.role === "dep"
-          ? `${ac.dest.icao} · ${ac.sid.name} · ${ac.exitFix.name}`
-          : `${ac.origin.icao} · ${ac.star} · ${ac.entryFix.name}`;
-        const alt = ac.alt < 50 ? "GND" : String(Math.round(ac.alt / 100)).padStart(3, "0");
-        const asg = ac.assignedAlt ? String(Math.round(ac.assignedAlt / 100)).padStart(3, "0") : "---";
-        html += `<div class="strip ${ac.role}${sel}" data-id="${ac.id}">
-          <div><span class="cs">${ac.cs}</span> <span class="dimtxt">${ac.type}${ac.heavy ? "/H" : ""} sq${ac.sqk}${ac.medevac ? " MEDEVAC" : ""}</span></div>
-          <div class="meta"><span>${route}</span></div>
-          <div class="meta"><span>${ac.role === "dep" ? "gate " + ac.gate : "arr " + G.arrRwy.id}</span><span>${alt}→${asg}</span></div>
-          <div class="st">${stateLabel(ac)}</div>
-        </div>`;
-      } else {
-        html += `<div class="strip compact ${ac.role}${sel}" data-id="${ac.id}"><span class="cs">${ac.cs}</span><span>${stateLabel(ac)}</span></div>`;
-      }
-    }
+    for (const ac of list) html += stripHtml(ac, pos === G.playerPos);
   }
   el.innerHTML = html;
-  el.querySelectorAll(".strip").forEach(s => {
-    s.onclick = () => {
+  el.querySelectorAll("[data-id]").forEach(s => {
+    s.onclick = ev => {
+      if (ev.target.classList.contains("hobtn")) return;
       G.selected = G.aircraft.find(a => a.id === +s.dataset.id) || null;
       renderStrips();
       document.getElementById("cmd").focus();
+    };
+  });
+  el.querySelectorAll(".hobtn").forEach(b => {
+    b.onclick = ev => {
+      ev.stopPropagation();
+      const ac = G.aircraft.find(a => a.id === +b.dataset.ho);
+      if (ac) initiateHandoff(ac);
     };
   });
 }
@@ -335,6 +363,33 @@ document.getElementById("btnAtis").onclick = () => {
   if (!G.running) return;
   xmit(G.playerPos, "ATIS", "sys", atisText(), null);
   TTS.say(atisText(), ATIS_VOICE);
+};
+document.getElementById("btnTdls").onclick = () => {
+  if (!G.running) return;
+  const el = document.getElementById("tdlscard");
+  const list = G.aircraft.filter(x => x.role === "dep" && x.state === "gate" && !x.remove);
+  const F = G.fac;
+  el.innerHTML = `
+    <button class="close" onclick="document.getElementById('tdls').classList.remove('open')">CLOSE</button>
+    <h2>vTDLS · PRE-DEPARTURE CLEARANCE</h2>
+    <p class="dimtxt">Uplink the filed clearance straight to the flight deck instead of reading it on frequency.
+    The crew accepts it, squawks, and calls Ground. This is how most departures at a busy field are actually
+    cleared; keep the voice clearance for anything non-standard.</p>
+    ${list.length ? list.map(x => `
+      <div class="tdlsrow">
+        <div>
+          <b>${x.cs}</b> <span class="dimtxt">${x.type} · gate ${x.gate} · CID ${x.cid}</span><br>
+          <span class="dimtxt">CLRD TO <b>${x.dest.icao}</b> VIA <b>${x.sid.name}</b> · MAINT <b>${F.initAlt}</b>
+          · EXP <b>${x.cruise}</b> · DPFRQ <b>${F.freqs.APP}</b> · SQ <b>${x.sqk}</b></span>
+        </div>
+        <button data-pdc="${x.id}">SEND PDC</button>
+      </div>`).join("")
+      : `<p class="dimtxt">No departures awaiting clearance at the gate right now.</p>`}`;
+  el.querySelectorAll("[data-pdc]").forEach(b => b.onclick = () => {
+    const ac = G.aircraft.find(x => x.id === +b.dataset.pdc);
+    if (ac && sendPDC(ac)) { b.textContent = "SENT"; b.disabled = true; }
+  });
+  document.getElementById("tdls").classList.add("open");
 };
 document.getElementById("btnSop").onclick = () => {
   if (!G.running) return;

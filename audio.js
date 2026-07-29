@@ -62,6 +62,8 @@ const TTS = {
     load();
     speechSynthesis.onvoiceschanged = load;
   },
+  held: false,          // true while the player keys the mic
+  current: null,
   say(text, seed) {
     if (!this.enabled || !("speechSynthesis" in window)) return;
     if (this.queue.length > 8) this.queue.shift();   // don't let a backlog build
@@ -69,26 +71,48 @@ const TTS = {
     this.pump();
   },
   pump() {
-    if (this.speaking || !this.queue.length) return;
-    const { text, seed } = this.queue.shift();
+    if (this.held || this.speaking || !this.queue.length) return;
+    const item = this.queue.shift();
+    this.current = item;
     this.speaking = true;
     squelch(0.05, 0.06);
     setTimeout(() => {
-      const u = new SpeechSynthesisUtterance(text);
-      if (this.voices.length) u.voice = this.voices[seed.v % this.voices.length];
-      u.rate = seed.rate; u.pitch = seed.pitch; u.volume = 0.9;
+      if (this.held) {                       // keyed during the lead-in: put it back
+        this.speaking = false;
+        this.queue.unshift(item);
+        this.current = null;
+        return;
+      }
+      const u = new SpeechSynthesisUtterance(item.text);
+      if (this.voices.length) u.voice = this.voices[item.seed.v % this.voices.length];
+      u.rate = item.seed.rate; u.pitch = item.seed.pitch; u.volume = 0.9;
       u.onend = u.onerror = () => {
         squelch(0.04, 0.05);
         this.speaking = false;
+        this.current = null;
         setTimeout(() => this.pump(), 140);
       };
       speechSynthesis.speak(u);
     }, 90);
   },
+  /* The controller keys the mic: nobody talks over you. Whatever was
+     mid-transmission is re-queued and repeated once you unkey. */
+  hold() {
+    this.held = true;
+    if (this.current) this.queue.unshift(this.current);
+    this.current = null;
+    if ("speechSynthesis" in window) speechSynthesis.cancel();
+    this.speaking = false;
+  },
+  release() {
+    this.held = false;
+    setTimeout(() => this.pump(), 260);
+  },
   stopAll() {
     this.queue = [];
     if ("speechSynthesis" in window) speechSynthesis.cancel();
     this.speaking = false;
+    this.current = null;
   },
 };
 
@@ -106,19 +130,48 @@ function initPTT(btn, onText) {
     btn.title = "Speech recognition not supported in this browser (try Chrome)";
     return;
   }
+  /* The mic stays keyed for as long as the button is held. Chrome's
+     recognizer likes to stop on its own at every pause, so it is
+     restarted transparently and the finalized pieces are accumulated;
+     the whole transmission goes out on release. */
   const rec = new SR();
-  rec.lang = "en-US"; rec.continuous = false; rec.interimResults = false;
-  let listening = false;
-  rec.onresult = e => onText(e.results[0][0].transcript);
-  rec.onend = rec.onerror = () => { listening = false; btn.classList.remove("rec"); };
+  rec.lang = "en-US"; rec.continuous = true; rec.interimResults = true;
+  let listening = false, buf = "", pending = "";
+  rec.onresult = e => {
+    pending = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const txt = e.results[i][0].transcript;
+      if (e.results[i].isFinal) buf += (buf ? " " : "") + txt.trim();
+      else pending += txt;
+    }
+  };
+  rec.onerror = ev => {
+    if (ev.error === "no-speech" || ev.error === "aborted") return;   // keep the key down
+    listening = false; btn.classList.remove("rec"); TTS.release();
+  };
+  rec.onend = () => {
+    if (listening) { try { rec.start(); } catch (e) {} return; }      // still held: resume
+    btn.classList.remove("rec");
+    const said = (buf + " " + pending).trim();
+    buf = ""; pending = "";
+    TTS.release();
+    if (said) onText(said);
+  };
   const start = () => {
     if (listening) return;
     listening = true;
+    buf = ""; pending = "";
     btn.classList.add("rec");
+    TTS.hold();                       // you have the frequency
     squelch(0.05, 0.05);
     try { rec.start(); } catch (e) {}
   };
-  const stop = () => { try { rec.stop(); } catch (e) {} squelch(0.04, 0.05); };
+  const stop = () => {
+    if (!listening) return;
+    listening = false;                // tells onend this was a real release
+    squelch(0.04, 0.05);
+    try { rec.stop(); } catch (e) { btn.classList.remove("rec"); TTS.release(); }
+  };
   btn.addEventListener("mousedown", start);
   btn.addEventListener("mouseup", stop);
   btn.addEventListener("mouseleave", () => listening && stop());

@@ -44,6 +44,28 @@ main{flex:1;display:flex;min-height:0}
 .strip.dep .st{color:var(--accent)}
 .strip.compact{padding:2px 6px;font-size:11px;display:flex;justify-content:space-between;color:var(--dim)}
 
+/* vNAS-style flight strip */
+.fstrip{border:1px solid var(--edge);border-left:3px solid var(--cyan);border-radius:3px;
+  background:#0a0f14;margin-bottom:5px;padding:4px 6px;cursor:pointer;font-size:11px;line-height:1.35}
+.fstrip.dep{border-left-color:var(--accent)}
+.fstrip.sel{background:#18222d;border-color:var(--yellow)}
+.fs-hd{display:flex;align-items:center;gap:6px;margin-bottom:3px}
+.fs-hd .cs{font-weight:700;font-size:12.5px;color:#9fd8ef}
+.fstrip.dep .fs-hd .cs{color:#8fe8b0}
+.fs-hd .cid{color:var(--dim)}
+.fs-hd .ho{margin-left:auto;font-size:10px;padding:0 4px;border-radius:3px}
+.fs-hd .ho.pend{color:#0a0f14;background:var(--orange)}
+.fs-hd .ho.ok{color:#0a0f14;background:var(--accent)}
+.fs-row{display:flex;gap:8px;margin-bottom:2px}
+.fs-f{display:flex;flex-direction:column;min-width:0}
+.fs-f i{font-style:normal;font-size:9px;color:var(--dim);letter-spacing:.06em}
+.fs-rte{color:#8ab8ff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px}
+.fs-rte i{font-style:normal;font-size:9px;color:var(--dim);margin-right:5px;letter-spacing:.06em}
+.fs-ft{display:flex;align-items:center;gap:6px;margin-top:2px}
+.fs-ft .st{color:var(--cyan);font-size:10.5px}
+.fstrip.dep .fs-ft .st{color:var(--accent)}
+.hobtn{margin-left:auto;font-size:9.5px;padding:1px 6px}
+
 #scopewrap{flex:1;position:relative;min-width:0;background:#000}
 #scope{position:absolute;inset:0;width:100%;height:100%;display:block;cursor:crosshair}
 #viewtabs{position:absolute;bottom:34px;left:10px;display:flex;gap:6px;z-index:5}
@@ -103,6 +125,9 @@ footer .freq{color:var(--dim);white-space:nowrap;font-size:12px}
 .menurow{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin:12px 0}
 .bigbtn{font-size:15px;padding:10px 26px;border-color:var(--accent);color:var(--accent)}
 .close{float:right}
+.tdlsrow{display:flex;align-items:center;gap:12px;border:1px solid var(--edge);border-radius:6px;
+  padding:8px 10px;margin:7px 0;font-size:12px}
+.tdlsrow button{margin-left:auto;white-space:nowrap}
 
 @media (max-width:1050px){
   #stripbay{width:180px}
@@ -120,6 +145,7 @@ footer .freq{color:var(--dim);white-space:nowrap;font-size:12px}
     <span class="chip good">SCORE <b id="scScore">0</b></span>
     <span class="chip">RATING <b id="scRating">S1</b></span>
     <span class="chip">PTS <b id="scPts">0</b></span>
+    <button id="btnTdls" title="vTDLS: send a pre-departure clearance by datalink">TDLS</button>
     <button id="btnSop" title="Facility standard operating procedures for this session">SOP</button>
     <button id="btnAtis" title="Show and play the current ATIS">ATIS</button>
     <button id="btnSpeed" title="Simulation rate">1&times;</button>
@@ -160,10 +186,13 @@ footer .freq{color:var(--dim);white-space:nowrap;font-size:12px}
 <div class="overlay open" id="menu"><div class="card" id="menucard"></div></div>
 <div class="overlay" id="help"><div class="card" id="helpcard"></div></div>
 <div class="overlay" id="sop"><div class="card" id="sopcard"></div></div>
+<div class="overlay" id="tdls"><div class="card" id="tdlscard"></div></div>
 
+<script src="airports.js"></script>
 <script src="data.js"></script>
 <script src="audio.js"></script>
 <script src="engine.js"></script>
+<script src="geo.js"></script>
 <script src="views.js"></script>
 <script src="app.js"></script>
 </body>

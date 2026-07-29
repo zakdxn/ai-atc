@@ -118,6 +118,12 @@ class Aircraft {
     this.voice = makeVoice();
     this.sqk = [...Array(4)].map(() => Math.floor(rnd(0, 7.99))).join("");
     if (/^7[567]00$/.test(this.sqk)) this.sqk = "2345";
+    this.cid = String(Math.floor(rnd(100, 999)));          // computer ID
+    this.eq = pick(["L", "L", "L", "G", "W", "Z"]);        // equipment suffix
+    this.rmk = Math.random() < 0.18
+      ? pick(["PBN/A1B1C1D1", "RVSM", "STS/HOSP", "OPR/CARGO", "TCAS", "RMK/SIMBRIEF"]) : "";
+    this.hoTo = null;                                       // pending handoff position
+    this.hoAccepted = false;
 
     this.x = 0; this.y = 0; this.alt = 0; this.hdg = 0;
     this.targetHdg = 0; this.turnDir = null;
@@ -146,6 +152,7 @@ class Aircraft {
       const exitName = pick(this.sid.exits);
       this.exitFix = G.fac.fixes.find(f => f.name === exitName);
       this.cruise = pick([28000, 30000, 32000, 34000, 36000]);
+      this.route = `${this.sid.name} ${this.exitFix.name} ${pick(["J",""])}${pick(["146","64","80","174",""])} ${this.dest.icao.slice(1)}`.replace(/\s+/g, " ").trim();
       this.x = gp.anchor.x + rnd(-0.12, 0.12);
       this.y = gp.anchor.y + rnd(-0.08, 0.08);
       this.state = "gate"; this.owner = "DEL";
@@ -158,6 +165,7 @@ class Aircraft {
       const entryName = pick(free.length ? free : G.fac.entryFixes);
       this.entryFix = G.fac.fixes.find(f => f.name === entryName);
       this.origin = pick(DESTS.filter(d => d.icao !== G.fac.icao));
+      this.cruise = pick([30000, 32000, 34000, 36000, 38000]);
       const brg = bearingTo({ x: 0, y: 0 }, this.entryFix);
       this.x = Math.sin(d2r(brg)) * 58; this.y = Math.cos(d2r(brg)) * 58;
       this.alt = this.targetAlt = pick([15000, 16000, 17000]);
@@ -165,6 +173,7 @@ class Aircraft {
       this.ias = this.targetIas = rnd(290, 320);
       this.hdg = this.targetHdg = bearingTo(this, { x: 0, y: 0 });
       this.directFix = this.entryFix;
+      this.route = `${this.origin.icao.slice(1)} ${this.entryFix.name} ${this.star}`;
       this.state = "ctrArr"; this.owner = "CTR";
       this.callAt = G.t + rnd(3, 10);
       this.medevac = Math.random() < 0.04;
@@ -600,13 +609,16 @@ function stepAircraft(ac, dt) {
     ac.aiAt = 0;
     AI_FN[ac.owner](ac);
   }
-  /* pilot nag when the player sits on them (suppressed after "stand by") */
+  /* pilot nag when the player sits on them: suppressed for the promised
+     standby window, and never more than one nag per 90 seconds */
   if (ac.owner === G.playerPos && ac.called && ac.reminders < 2 &&
-      (!ac.standbyAt || G.t - ac.standbyAt > 150)) {
+      (!ac.standbyAt || G.t - ac.standbyAt > (ac.standbyDur || 420)) &&
+      (!ac.lastNagAt || G.t - ac.lastNagAt > 90)) {
     const stale = ["gate", "gndCall", "taxiWait", "holdShort", "gndIn"].includes(ac.state) && ac.stateT > 100 + ac.reminders * 80;
     const staleAir = (ac.state === "ctrArr" || ac.state === "appCtl") && !ac.app && ac.stateT > 150 + ac.reminders * 100;
     if (stale || staleAir) {
       ac.reminders++;
+      ac.lastNagAt = G.t;
       ac.say(pick([`${ac.spoken()}, did you copy?`, `${ac.spoken()}, still with you.`, `${ac.spoken()}, standing by.`]));
     }
   }
@@ -964,8 +976,8 @@ const CMD_PATTERNS = [
   { t: "dvs",   re: /\bdescend\s+via\b(?:\s+the)?(?:\s+\w+)?|\bdvs\b/,               f: () => ({}) },
   { t: "dct",   re: /\b(?:proceed\s+direct(?:\s+to)?|direct|dct|pd)\s+([a-z]{2,6})\b/, f: m => ({ fix: m[1].toUpperCase() }) },
   { t: "ils",   re: /\bcleared\s+(?:for\s+)?(?:the\s+)?ils\b[\w\s]*?|\bcleared\s+approach\b|\bils\b/, f: () => ({}) },
-  { t: "rbok",  re: /\breadback\s+correct\b|\brbc\b/,                                f: () => ({}) },
-  { t: "rbbad", re: /\breadback\s+incorrect\b|\bnegative\s+readback\b/,              f: () => ({}) },
+  { t: "rbbad", re: /\bread\s?back\s+(?:incorrect|is\s+incorrect|not\s+correct|wrong)\b|\bnegative\s+read\s?back\b/, f: () => ({}) },
+  { t: "rbok",  re: /\bread\s?back\s+(?:is\s+)?correct\b|\brbc\b|\bcorrect\s+read\s?back\b/, f: () => ({}) },
   { t: "push",  re: /\bpush(?:back)?\s+approved\b|\bpa\b/,                           f: () => ({}) },
   { t: "hold",  re: /\bhold\s+position\b|\bhp\b/,                                    f: () => ({}) },
   { t: "cont",  re: /\bcontinue(?:\s+taxi)?\b/,                                      f: () => ({}) },
@@ -974,12 +986,13 @@ const CMD_PATTERNS = [
   { t: "cto",   re: /\bcleared\s+for\s+takeoff\b(?:\s+runway)?(?:\s+\d+[lrc]?)?|\bcto\b/, f: () => ({}) },
   { t: "ctl",   re: /\bcleared\s+to\s+land\b(?:\s+runway)?(?:\s+\d+[lrc]?)?|\bctl\b/, f: () => ({}) },
   { t: "ga",    re: /\bgo\s+around\b|\bga\b/,                                        f: () => ({}) },
-  { t: "toTwr", re: /\b(?:contact|monitor)\s+tower\b(?:\s+\d+)?|\bct\b/,             f: () => ({}) },
-  { t: "toGnd", re: /\bcontact\s+ground\b(?:\s+\d+)?|\bcg\b/,                        f: () => ({}) },
-  { t: "toDep", re: /\bcontact\s+departure\b(?:\s+\d+)?|\bcd\b/,                     f: () => ({}) },
-  { t: "toApp", re: /\bcontact\s+approach\b(?:\s+\d+)?|\bcap\b/,                     f: () => ({}) },
-  { t: "toCtr", re: /\bcontact\s+(?:center|centre)\b(?:\s+\d+)?|\bcc\b/,             f: () => ({}) },
+  { t: "toTwr", re: /\b(?:contact|monitor|call|over\s+to|switch\s+to)\s+tower\b(?:\s+\d+)?|\btower\s+when\s+ready\b|\bct\b/, f: () => ({}) },
+  { t: "toGnd", re: /\b(?:contact|monitor|call|over\s+to|switch\s+to)\s+ground\b(?:\s+\d+)?|\bground\s+when\s+ready\b|\bcg\b/, f: () => ({}) },
+  { t: "toDep", re: /\b(?:contact|monitor|call|over\s+to|switch\s+to)\s+departure\b(?:\s+\d+)?|\bcd\b/, f: () => ({}) },
+  { t: "toApp", re: /\b(?:contact|monitor|call|over\s+to|switch\s+to)\s+approach\b(?:\s+\d+)?|\bcap\b/, f: () => ({}) },
+  { t: "toCtr", re: /\b(?:contact|monitor|call|over\s+to|switch\s+to)\s+(?:center|centre)\b(?:\s+\d+)?|\bcc\b/, f: () => ({}) },
   { t: "exit",  re: /\bexit\s+(?:left|right|\w+)?\s*when\s+able\b/,                  f: () => ({}) },
+  { t: "ho",    re: /\bhand\s?off\b|\bflash\b|\bpoint\s+out\b/,                       f: () => ({}) },
   { t: "stby",  re: /\bstand\s?by\b|\bhold\s+on\b/,                                  f: () => ({}) },
   { t: "rgr",   re: /\brog(?:er)?\b|\bthanks?\b|\bgood\s+day\b|\bwilco\b/,           f: () => ({}) },
 ];
@@ -1084,6 +1097,14 @@ function finishClearance(ac, silent) {
 }
 
 /* ---- generic ops execution with readback ---- */
+/* credit or dock the switch depending on the handoff state, then clear it */
+function settleHandoff(ac, to) {
+  if (ac.hoTo === to && ac.hoAccepted) addPoints(4, `${ac.cs} handed off cleanly to ${to}`);
+  else if (ac.hoTo === to) xmit(G.playerPos, "SYS", "warn", `${ac.cs} switched before ${to} accepted the handoff.`, null);
+  else addPoints(-3, `${ac.cs} switched to ${to} with no handoff flashed`);
+  ac.hoTo = null; ac.hoAccepted = false;
+}
+
 function execOps(ac, ops) {
   const F = G.fac;
   const parts = [], unable = [];
@@ -1193,11 +1214,12 @@ function execOps(ac, ops) {
         if (ac.role === "dep" && ac.state === "holdShortG") {
           parts.push("monitor tower, good day");
           ac.state = "holdShort";
+          settleHandoff(ac, "TWR");
           setOwner(ac, "TWR", false);
-          if (G.playerPos === "GND") addPoints(3, `${ac.cs} shipped to tower`);
         } else if (ac.role === "arr" && ac.app && ["appCtl"].includes(ac.state)) {
           parts.push("tower, good day");
           ac.state = "twrArr"; ac.stateT = 0;
+          settleHandoff(ac, "TWR");
           setOwner(ac, "TWR", false);
           if (G.playerPos === "APP") { addPoints(12, `${ac.cs} delivered on the ILS`); G.counters.ils++; }
         } else unable.push("tower");
@@ -1206,24 +1228,25 @@ function execOps(ac, ops) {
         if (ac.role === "arr" && ac.state === "rwyExit") {
           parts.push("ground, good day");
           ac.state = "gndIn"; ac.stateT = 0;
+          settleHandoff(ac, "GND");
           setOwner(ac, "GND", false);
-          if (G.playerPos === "TWR") addPoints(3, `${ac.cs} to ground`);
         } else unable.push("ground");
         break;
       case "toDep":
         if (ac.role === "dep" && ac.state === "climb") {
           parts.push("departure, good day");
           ac.state = "depCtl"; ac.stateT = 0;
+          settleHandoff(ac, "APP");
           setOwner(ac, "APP", false);
-          if (G.playerPos === "TWR") addPoints(3, `${ac.cs} to departure`);
         } else unable.push("departure");
         break;
       case "toApp":
         if (ac.role === "arr" && ac.state === "ctrArr") {
           parts.push("approach, good day");
           ac.state = "appCtl"; ac.stateT = 0;
+          settleHandoff(ac, "APP");
           setOwner(ac, "APP", false);
-          if (G.playerPos === "CTR") { addPoints(6, `${ac.cs} handed to approach`); G.counters.ho++; }
+          if (G.playerPos === "CTR") G.counters.ho++;
         } else unable.push("approach");
         break;
       case "toCtr":
@@ -1231,8 +1254,9 @@ function execOps(ac, ops) {
           if (ac.alt < 3800 || ac.distField() < 12) { unable.push(`center just yet, we're at ${altWords(Math.round(ac.alt / 100) * 100)}`); break; }
           parts.push("center, good day");
           ac.state = "ctrDep"; ac.stateT = 0;
+          settleHandoff(ac, "CTR");
           setOwner(ac, "CTR", false);
-          if (G.playerPos === "APP") { addPoints(6, `${ac.cs} to center`); G.counters.ho++; }
+          if (G.playerPos === "APP") G.counters.ho++;
         } else if (ac.role === "dep" && ac.state === "ctrDep") {
           parts.push(`${G.fac.nextCenter}, good day`);
           ac.state = "out";
@@ -1240,6 +1264,9 @@ function execOps(ac, ops) {
         } else unable.push("center");
         break;
       case "exit": parts.push("will do"); break;
+      case "ho":
+        initiateHandoff(ac);
+        return;                              // a coordination action, not a radio call
       case "stby":
         ac.standbyAt = G.t;
         parts.push("standing by");
@@ -1264,6 +1291,25 @@ function playerTransmit(raw) {
   if (!raw) return;
   xmit(G.playerPos, "YOU", "you", raw, null);
   const norm = normalizeTx(raw);
+
+  /* broadcast to everyone on the frequency: "all aircraft ..." */
+  if (/\ball\s+(?:aircraft|stations)\b/.test(norm)) {
+    const mins = (norm.match(/(\d{1,2})\s*minutes?\b/) || [])[1];
+    const dur = mins ? Math.min(+mins, 60) * 60 : 420;
+    const waiting = G.aircraft.filter(a => a.owner === G.playerPos && a.called && !a.remove);
+    if (!waiting.length) { sysLog("Nobody on frequency to hear that."); return; }
+    for (const a of waiting) { a.standbyAt = G.t; a.standbyDur = dur; a.reminders = 0; a.lastNagAt = G.t; }
+    /* a staggered chorus of short acknowledgments; everyone got the message */
+    waiting.slice(0, 5).forEach((a, i) => {
+      setTimeout(() => {
+        if (!a.remove) a.say(pick([
+          `${a.spoken()}.`, `Standing by, ${a.spoken()}.`, `Roger, ${a.spoken()}.`, `${a.spoken()}, roger.`,
+        ]));
+      }, 700 + i * rnd(1400, 2400));
+    });
+    return;
+  }
+
   let [ac, rest] = matchCallsign(norm);
   if (!ac) {
     if (G.selected && !G.selected.remove) { ac = G.selected; rest = norm; }
@@ -1275,9 +1321,12 @@ function playerTransmit(raw) {
 
   /* conversational intents any pilot understands */
   if (/\bstand\s?by\b|\bhold\s+on\b|\bexpect\s+clearance\b|\bcall\s+you\s+back\b|\bbe\s+with\s+you\b/.test(rest)) {
+    const mins = (rest.match(/(\d{1,2})\s*minutes?\b/) || [])[1];
     ac.standbyAt = G.t;
-    ac.reminders = Math.min(ac.reminders, 1);
-    setTimeout(() => { if (!ac.remove) ac.say(`Standing by, ${ac.spoken()}.`); }, 800);
+    ac.standbyDur = mins ? Math.min(+mins, 60) * 60 : 420;
+    ac.reminders = 0;
+    ac.lastNagAt = G.t;
+    setTimeout(() => { if (!ac.remove) ac.say(pick([`Standing by, ${ac.spoken()}.`, `Roger, ${ac.spoken()}.`, `${ac.spoken()}.`])); }, 800);
     return;
   }
   if (/\b(?:confirm|say|verify)\b[\w\s]*\bdestination\b/.test(rest) && ac.role === "dep") {
@@ -1286,6 +1335,11 @@ function playerTransmit(raw) {
   }
   if (/\bsay\s+again\b|\brepeat\b/.test(rest)) {
     setTimeout(() => { if (!ac.remove) pilotCheckIn(ac); }, 800);
+    return;
+  }
+  /* "what are you waiting for", "say intentions", "say request" */
+  if (/\bwaiting\s+(?:for|on)\b|\bsay\s+(?:your\s+)?(?:intentions|request)\b|\badvise\b/.test(rest)) {
+    setTimeout(() => { if (!ac.remove) ac.say(`${ac.spoken()}, ${pilotRequest(ac)}.`); }, 800);
     return;
   }
 
@@ -1297,21 +1351,125 @@ function playerTransmit(raw) {
     if (ac.clxStage === 2 && /\bsquawk\s+\d{4}\b|\baltitude\b|\bmaintain\b/.test(rest)) {
       verdictReadback(ac, false); return;    // restating an item = correcting the readback
     }
+    /* a handoff to ground works once the clearance is finished */
+    if (ops.some(o => o.t === "toGnd")) {
+      if (ac.clxStage >= 3) {
+        ac.say(`Over to ground, ${ac.spoken()}, ${BYE()}.`);
+        if (ac.owner === "DEL") { settleHandoff(ac, "GND"); scheduleGndCall(ac); }
+      } else {
+        ac.say(`${ac.spoken()}, we still need our clearance first.`);
+      }
+      return;
+    }
     /* only treat it as a clearance if it actually contains clearance content */
     if (/\bcleared\b|\bsquawk\b|\bmaintain\b|\bclimb\b|\bdeparture\b|\bfiled\b|\bfrequency\b/.test(rest) ||
         (() => { const before = { ...ac.clx }; parseClearance(ac, rest);
                  return JSON.stringify(before) !== JSON.stringify(ac.clx); })()) {
       clearanceFlow(ac, rest);
-    } else if (/\brog(?:er)?\b|\bthanks?\b|\bgood\s+day\b/.test(rest)) {
+    } else if (/\brog(?:er)?\b|\bthanks?\b|\bgood\s+day\b|\bwilco\b/.test(rest)) {
       /* just an acknowledgment, no reply needed */
     } else {
-      setTimeout(() => { if (!ac.remove) ac.say(`${ac.spoken()}, sorry, say again?`); }, 800);
+      /* say what they're actually waiting on rather than a blank "say again" */
+      setTimeout(() => { if (!ac.remove) ac.say(`${ac.spoken()}, say again? ${cap(pilotRequest(ac))}.`); }, 800);
     }
     return;
   }
   const { ops } = parseCommands(rest);
-  if (!ops.length) { ac.pending = { ops: [], due: G.t + 1 }; return; }
+  if (!ops.length) {
+    setTimeout(() => { if (!ac.remove) ac.say(`${ac.spoken()}, say again? ${cap(pilotRequest(ac))}.`); }, 800);
+    return;
+  }
   ac.pending = { ops, due: G.t + rnd(0.8, 1.8) };
+}
+
+const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+
+/* what this aircraft currently needs from the controller */
+function pilotRequest(ac) {
+  switch (ac.state) {
+    case "gate":
+      return ac.clxStage >= 2 ? "we're waiting on you to verify our readback"
+                              : `we're waiting on our IFR clearance to ${ac.dest.city}`;
+    case "clxOk": case "gndCall": return "we're ready for pushback";
+    case "push": return "we're still pushing back";
+    case "taxiWait": return "we're ready to taxi";
+    case "taxi": case "taxiIn": return "we're taxiing";
+    case "holdShortG": case "holdShort": return `we're holding short runway ${rwyWords(G.depRwy.id)}, ready to go`;
+    case "lineup": return "we're lined up and waiting";
+    case "rolling": return "we're rolling";
+    case "climb": case "depCtl": return `we're climbing to ${altWords(ac.assignedAlt || G.fac.initAlt)}`;
+    case "ctrDep": return `we're headed for ${ac.exitFix.name}`;
+    case "ctrArr": return `we're descending on the ${ac.star}`;
+    case "appCtl":
+      return ac.app === "established" ? `we're established on the ILS runway ${rwyWords(G.arrRwy.id)}`
+           : ac.app === "cleared" ? "we're cleared for the approach, looking for the localizer"
+           : "we're looking for vectors to the final";
+    case "twrArr": return ac.landClr ? `we're cleared to land ${rwyWords(G.arrRwy.id)}`
+                                     : "we're on final, need a landing clearance";
+    case "landedRoll": return "we're rolling out";
+    case "rwyExit": case "gndIn": return "we're clear of the runway, need taxi to the gate";
+    default: return "standing by";
+  }
+}
+
+/* =====================================================================
+   vTDLS: pre-departure clearance by datalink. Uplink the strip's filed
+   clearance and the crew accepts it without using the frequency.
+   ===================================================================== */
+function sendPDC(ac) {
+  if (!ac || ac.remove) return false;
+  if (ac.role !== "dep" || ac.state !== "gate") { sysLog(`${ac.cs} cannot take a PDC right now.`); return false; }
+  if (ac.clxStage >= 3) { sysLog(`${ac.cs} is already cleared.`); return false; }
+  const F = G.fac;
+  xmit("DEL", "TDLS", "sys",
+    `PDC UPLINK ${ac.cs}: CLRD TO ${ac.dest.icao} VIA ${ac.sid.name} DP, MAINT ${F.initAlt}, EXP ${ac.cruise} 10 MIN, DPFRQ ${F.freqs.APP}, SQ ${ac.sqk}`, null);
+  ac.clx = { dest: true, sid: true, alt: true, sqkOk: true, sqkSaid: ac.sqk };
+  ac.rbError = null;
+  ac.pdc = true;
+  const delay = rnd(4, 9);
+  setTimeout(() => {
+    if (ac.remove) return;
+    ac.say(`${ac.spoken()}, PDC received for ${ac.dest.city}, squawking ${numWords(ac.sqk)}.`);
+    ac.clxStage = 3;
+    addPoints(6, `${ac.cs} cleared by PDC`);
+    G.counters.clx++;
+    finishClearance(ac, true);
+  }, delay * 1000 / Math.max(1, G.speed));
+  G.hooks.strips();
+  return true;
+}
+
+/* =====================================================================
+   HANDOFFS
+   Mirrors the real flow: you flash the track to the next controller,
+   they accept it, and only then do you switch the aircraft to their
+   frequency. Switching an unaccepted track still works but costs you.
+   ===================================================================== */
+function nextPosFor(ac) {
+  if (ac.role === "dep") {
+    return { DEL: "GND", GND: "TWR", TWR: "APP", APP: "CTR", CTR: null }[ac.owner];
+  }
+  return { CTR: "APP", APP: "TWR", TWR: "GND", GND: null, DEL: null }[ac.owner];
+}
+const HO_CMD = { GND: "contact ground", TWR: "contact tower", APP: ac => ac.role === "dep" ? "contact departure" : "contact approach", CTR: "contact center" };
+
+function initiateHandoff(ac) {
+  if (!ac || ac.remove) return;
+  if (ac.owner !== G.playerPos) { sysLog(`${ac.cs} is not your track.`); return; }
+  const to = nextPosFor(ac);
+  if (!to) { sysLog(`${ac.cs} has nowhere further to go from ${ac.owner}.`); return; }
+  if (ac.hoTo === to && ac.hoAccepted) { sysLog(`${ac.cs} already accepted by ${to}.`); return; }
+  ac.hoTo = to; ac.hoAccepted = false;
+  xmit(G.playerPos, "SYS", "sys", `H/O ${ac.cs} flashed to ${to}. Waiting for acceptance.`, null);
+  G.hooks.strips();
+  const delay = rnd(2500, 7000) / Math.max(1, G.speed);
+  setTimeout(() => {
+    if (ac.remove || ac.hoTo !== to) return;
+    ac.hoAccepted = true;
+    chime();
+    xmit(G.playerPos, "SYS", "sys", `H/O ${ac.cs} accepted by ${to}. Ship them: "${typeof HO_CMD[to] === "function" ? HO_CMD[to](ac) : HO_CMD[to]}".`, null);
+    G.hooks.strips();
+  }, delay);
 }
 
 /* =====================================================================
@@ -1425,6 +1583,7 @@ function startSession(facIdx, playerPos, density) {
   G.cfg = cfg;
   G.arrRwy = resolveRwy(cfg.arr);
   G.depRwy = resolveRwy(cfg.dep);
+  if (typeof prepareRoutes === "function") prepareRoutes(F, G.arrRwy.id, G.depRwy.id);
   G.atis = genAtis(F, cfg);
   G.t = 0; G.score = 0; G.points = 0;
   G.aircraft = []; G.arrSeq = [];
