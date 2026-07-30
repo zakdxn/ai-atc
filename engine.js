@@ -1659,7 +1659,6 @@ const CMD_PATTERNS = [
   { t: "abort", re: /\b(?:abort|cancel|reject)\s+(?:the\s+)?take\s?off(?:\s+clearance)?\b|\btake\s?off\s+clearance\s+cancell?ed\b/, f: () => ({}) },
   { t: "stby",  re: /\bstand\s?by\b(?:\s+(?:for\s+)?(\d{1,2})\s*(?:minutes?|mins?)?)?|\bhold\s+on\b/, f: m => ({ mins: m[1] ? +m[1] : null }) },
   { t: "rgr",   re: /\brog(?:er)?\b|\bthanks?\b|\bgood\s+day\b|\bwilco\b/,           f: () => ({}) },
-  { t: "expedite", re: /\bexpedite(?:\s+rollout)?\b/,                                f: () => ({}) },
 ];
 
 function parseCommands(s) {
@@ -1817,6 +1816,8 @@ const AI_ACTIONS = {
   seq:     n => n == null ? null : { t: "seq", n },
   dct:     (n, v) => { const f = (String(v).match(/[A-Za-z]{2,6}/) || [])[0]; return f ? { t: "dct", fix: f.toUpperCase() } : null; },
   ils:     (n, v) => ({ t: "ils", rwy: (String(v).match(/\d{1,2}[LRClrc]?/) || [""])[0].toUpperCase() }),
+  
+  // --- UPDATED TAXI & PROCEED LOGIC ---
   taxi:    (n, v) => {
     const str = String(v).toLowerCase();
     if (str.includes("penalty") || str.includes("pad")) return { t: "penalty" };
@@ -1827,6 +1828,8 @@ const AI_ACTIONS = {
     if (str.includes("penalty") || str.includes("pad")) return { t: "penalty" };
     return null; 
   },
+  // ------------------------------------
+
   cto:     (n, v) => ({ t: "cto", rwy: (String(v).match(/\d{1,2}[LRClrc]?/) || [""])[0].toUpperCase() }),
   ctl:     (n, v) => ({ t: "ctl", rwy: (String(v).match(/\d{1,2}[LRClrc]?/) || [""])[0].toUpperCase() }),
   luaw:    (n, v) => ({ t: "luaw", rwy: (String(v).match(/\d{1,2}[LRClrc]?/) || [""])[0].toUpperCase() }),
