@@ -49,6 +49,7 @@ const G = {
   fac: null, cfg: null, arrRwy: null, depRwy: null,
   playerPos: "DEL",
   t: 0, speed: 1, paused: false,
+  epochMs: Date.now(),   // real-world UTC at connect; G.t is elapsed sim seconds on top of it
   aircraft: [],
   selected: null,
   channels: {},          // pos -> [{t,who,cls,text}]
@@ -65,6 +66,51 @@ const G = {
   density: "med",
   hooks: { log: () => {}, strips: () => {}, score: () => {}, notify: () => {} },
 };
+
+/* =====================================================================
+   ZULU CLOCK
+   Everything the controller reads is real-world UTC. G.epochMs is the
+   wall-clock instant the session connected; G.t is elapsed sim seconds
+   on top of it, so at 2x sim rate the clock runs at 2x as well. Every
+   display, ATIS stamp, METAR and wheels-up time routes through here so
+   they can never drift apart.
+   ===================================================================== */
+function simDate(t) {
+  return new Date(G.epochMs + (t === undefined ? G.t : t) * 1000);
+}
+/* "1347" for a datablock or a wheels-up time */
+function zulu(t) {
+  const d = simDate(t);
+  return String(d.getUTCHours()).padStart(2, "0") + String(d.getUTCMinutes()).padStart(2, "0");
+}
+/* "13:47:02" for the header clock and the comms log */
+function zuluHMS(t) {
+  const d = simDate(t);
+  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}:${String(d.getUTCSeconds()).padStart(2, "0")}`;
+}
+function zuluSS(t) { return String(simDate(t).getUTCSeconds()).padStart(2, "0"); }
+/* "301347Z", the day-of-month + time group a real METAR carries */
+function metarStamp(t) {
+  const d = simDate(t);
+  return String(d.getUTCDate()).padStart(2, "0") + zulu(t) + "Z";
+}
+/* wheels-up times are spoken and printed as a plain Zulu group */
+function edctClock(t) { return zulu(t); }
+/* Local field time, from longitude. Good enough to know whether it is dark
+   out at the field, which is all the ATIS and the night displays need. */
+function fieldHour(fac, t) {
+  const d = simDate(t);
+  const utcH = d.getUTCHours() + d.getUTCMinutes() / 60;
+  const off = fac && typeof fac.lon === "number" ? fac.lon / 15 : -6;
+  return ((utcH + off) % 24 + 24) % 24;
+}
+function fieldTod(fac, t) {
+  const h = fieldHour(fac, t);
+  if (h >= 7 && h < 18) return "day";
+  if (h >= 18 && h < 20) return "dusk";
+  if (h >= 5.5 && h < 7) return "dusk";
+  return "night";
+}
 
 const AI_SHORT = fac => fac.icao.replace(/^K/, "");
 /* Spoken on frequency. Never the 3-letter code: speech engines read
@@ -202,25 +248,17 @@ class Aircraft {
         spawnY = gp.anchor.y + rnd(-0.03, 0.03);
       }
 
-      // GUARANTEE NO SPAWN ON RUNWAY OR IN GRASS
-      let isBad = (spawnX === 0 && spawnY === 0);
-      if (!isBad) {
-        for (const r of G.fac.runways) {
-          const l2 = Math.pow(r.thr.x - r.end.x, 2) + Math.pow(r.thr.y - r.end.y, 2);
-          if (l2 === 0) continue;
-          let t = ((spawnX - r.thr.x) * (r.end.x - r.thr.x) + (spawnY - r.thr.y) * (r.end.y - r.thr.y)) / l2;
-          t = Math.max(0, Math.min(1, t));
-          const proj = { x: r.thr.x + t * (r.end.x - r.thr.x), y: r.thr.y + t * (r.end.y - r.thr.y) };
-          if (dist2({x: spawnX, y: spawnY}, proj) < 0.08) { // 0.08 nm = ~500 feet exclusion zone
-            isBad = true; break;
-          }
-        }
-      }
+      /* Never spawn on a runway or at the origin. The test is the runway
+         surface plus a wingspan: a wider exclusion than that throws away
+         perfectly good stands, because a real ramp sits closer to the
+         runway than that, and everything then heaps onto the anchor. */
+      const isBad = (spawnX === 0 && spawnY === 0) ||
+        (typeof onRunwaySurface === "function" && onRunwaySurface(G.fac, { x: spawnX, y: spawnY }));
 
       if (isBad) {
-        // If the spot is on a runway or invalid, tightly double-park on the concrete apron anchor
-        this.x = gp.anchor.x + rnd(-0.015, 0.015);
-        this.y = gp.anchor.y + rnd(-0.015, 0.015);
+        /* fall back to a spread across the ramp, not a single point */
+        this.x = gp.anchor.x + rnd(-0.10, 0.10);
+        this.y = gp.anchor.y + rnd(-0.07, 0.07);
       } else {
         this.x = spawnX;
         this.y = spawnY;
@@ -390,9 +428,11 @@ function aiDEL(ac) {
 
   if (ac.clxStage === 1) {
     G.lastDelTime = G.t; // Record time of this clearance
+    const e0 = edctOf(ac);
+    if (e0) aiSay("DEL", `${ac.spoken()}, traffic management has a wheels-up time for you of ${numWords(edctClock(e0))} zulu.`);
     const pdcRate = ["high", "insane"].includes(G.density) ? 0.8 : 0.3;
     if (Math.random() < pdcRate) {
-       xmit("DEL", "TDLS", "sys", `PDC UPLINK ${ac.cs}: CLRD TO ${ac.dest.icao} VIA ${ac.sid.name} DP, MAINT ${F.initAlt}, EXP ${ac.cruise} 10 MIN, DPFRQ ${depFreq(F)}, SQ ${ac.sqk}`, null);
+       xmit("DEL", "TDLS", "sys", `PDC UPLINK ${ac.cs}: CLRD TO ${ac.dest.icao} VIA ${ac.sid.name} DP, MAINT ${F.initAlt}, EXP ${ac.cruise} 10 MIN, DPFRQ ${depFreq(F)}, SQ ${ac.sqk}${e0 ? ", EDCT " + edctClock(e0) + "Z" : ""}`, null);
        ac.clx = { dest: true, sid: true, alt: true, sqkOk: true, sqkSaid: ac.sqk };
        ac.rbError = null;
        ac.pdc = true;
@@ -571,17 +611,33 @@ function startRoll(ac) {
 }
 
 /* --- AI approach: plan vectors, sequence onto the ILS --- */
+/* Turn a departure back into an arrival for an emergency return. Everything
+   downstream (strips, the flight plan list, pilot readbacks) reads origin,
+   star and entryFix on an arrival, so they all have to exist. */
+function returnToField(ac) {
+  ac.returning = true;
+  ac.role = "arr";
+  ac.origin = G.fac.dest || { icao: G.fac.icao, city: (G.fac.apName || G.fac.icao).split(" ")[0] };
+  ac.star = ac.star || "RETURN";
+  ac.entryFix = ac.entryFix || ac.exitFix || G.fac.fixes[0];
+  ac.route = `${G.fac.icao.slice(1)} emergency return ${(ac.rwy || G.arrRwy).id}`;
+  ac.appPlan = null;
+  ac.app = null;
+  ac.landClr = false;
+  ac.directFix = null;
+  ac.sid = ac.sid || null;
+  ac.state = "appCtl";
+  setOwner(ac, "APP", true);
+  G.hooks.strips();
+}
+
 function aiAPP(ac) {
   const F = G.fac;
   if (ac.role === "dep") {
     // NEW: Intercept departures with non-NORDO emergencies and force them to return!
     if (ac.emerg && ac.emerg.id !== "nordo" && !ac.returning) {
-      ac.returning = true; // Prevents loop
-      ac.role = "arr";     // Flip them to an arrival
-      ac.appPlan = null;   // Nuke their departure routing
-      ac.state = "appCtl"; // Force them to approach state
-      setOwner(ac, "APP", true); // Ensure Approach explicitly owns them to sequence
-      aiSay("APP", `${ac.spoken()}, radar contact, expect vectors for an immediate return to runway ${rwyWords(G.arrRwy.id)}.`);
+      returnToField(ac);
+      aiSay("APP", `${ac.spoken()}, radar contact, expect vectors for an immediate return to runway ${rwyWords((ac.rwy || G.arrRwy).id)}.`);
       ac.aiAt = G.t + 5;
       return;
     }
@@ -808,9 +864,13 @@ function stepAircraft(ac, dt) {
     else if (freqBusy(ac.owner)) ac.callAt = G.t + rnd(2, 5);
     else pilotCheckIn(ac);
   }
-  /* AI controller action */
+  /* AI controller action. Normally an AI controller waits for a gap on the
+     frequency, but some transmissions cannot wait: at a saturated field the
+     approach frequency can stay blocked long enough that an arrival flies
+     from six miles to touchdown before the switch to tower ever goes out.
+     A real controller steps on the frequency for that, so this does too. */
   if (isAI(ac.owner) && ac.called && ac.aiAt && G.t >= ac.aiAt) {
-    if (freqBusy(ac.owner)) ac.aiAt = G.t + rnd(2, 4);
+    if (freqBusy(ac.owner) && !aiUrgent(ac)) ac.aiAt = G.t + rnd(2, 4);
     else { ac.aiAt = 0; AI_FN[ac.owner](ac); }
   }
   /* pilot nag when the player sits on them: suppressed for the promised
@@ -847,23 +907,35 @@ function stepAircraft(ac, dt) {
     case "taxi": case "taxiIn": {
       const path = ac.taxiPath;
       if (!path || ac.taxiIdx >= path.length) return;
-      if (ac.holdFlag) return;                       // told to hold position
-      
-      const wp = path[ac.taxiIdx];
-      const myDistToWp = dist2(ac, wp);
-
-      /* simple in-trail spacing on the ground; only yield to planes AHEAD of us toward the waypoint */
-      for (const o of G.aircraft) {
-        if (o !== ac && ["taxi", "taxiIn", "holdShortG", "holdShort"].includes(o.state)) {
-          if (dist2(ac, o) < 0.045) { // Increased distance to naturally queue along the line
-            const oDistToWp = dist2(o, wp);
-            // Only yield if the other aircraft is closer to our target waypoint than we are
-            if (oDistToWp < myDistToWp && sameDirAhead(ac, o)) return;
-          }
-        }
+      /* a timed hold ("we need a minute here") runs out on sim time, so it
+         respects pause and whatever speed the session is running at */
+      if (ac.holdUntil && G.t >= ac.holdUntil) {
+        ac.holdUntil = 0; ac.holdFlag = false;
+        ac.say(`${ac.spoken()}, we're moving again, thanks.`);
       }
+      if (ac.holdFlag) return;                       // told to hold position
 
-      const d = myDistToWp;
+      const wp = path[ac.taxiIdx];
+
+      /* In-trail spacing on the ground. Yield only to traffic ahead of us
+         that is nearer our own next waypoint. */
+      let blocker = null;
+      for (const o of G.aircraft) {
+        if (o === ac || o.remove) continue;
+        if (!["taxi", "taxiIn", "holdShortG", "holdShort"].includes(o.state)) continue;
+        if (taxiYields(ac, o)) { blocker = o; break; }
+      }
+      if (blocker) {
+        /* Two aircraft nose to nose can each be nearer the other's next
+           waypoint, so "whoever is closer goes first" has them yielding to
+           each other for ever. Break the tie the same way every tick, and
+           stop yielding after a while so a wedged pair always clears. */
+        const mutual = taxiYields(blocker, ac);
+        ac.yieldT = (ac.yieldT || 0) + dt;
+        if ((!mutual || ac.id > blocker.id) && ac.yieldT < 45) return;
+      } else ac.yieldT = 0;
+
+      const d = dist2(ac, wp);
       const step = (ac.ias / 3600) * dt;
       if (d <= step) {
         ac.x = wp.x; ac.y = wp.y;
@@ -910,7 +982,7 @@ function stepAircraft(ac, dt) {
       const f = { x: Math.sin(d2r(R.hdg)), y: Math.cos(d2r(R.hdg)) };
       const exitAt = txIn ? (txIn.exit.x - R.thr.x) * f.x + (txIn.exit.y - R.thr.y) * f.y : 0;
       
-      const distToExit = exitAt - rolled;
+      const distToExit = txIn && exitAt > 0.2 ? exitAt - rolled : -1;
       const minSpd = distToExit > 0.3 ? 60 : 35; // Keep speed up if the exit is still far away
       
       ac.ias = Math.max(minSpd, ac.ias - 16 * dt); // Brake aggressively
@@ -918,8 +990,10 @@ function stepAircraft(ac, dt) {
       ac.x += Math.sin(d2r(ac.hdg)) * d;
       ac.y += Math.cos(d2r(ac.hdg)) * d;
       
-      if (ac.ias <= 65 && distToExit <= 0.08) { // Exit at high-speed
-        if (txIn) { ac.x = txIn.exit.x; ac.y = txIn.exit.y; }
+      const canExit = txIn && exitAt > 0.2;
+      const rolledOut = rolled > (R.len || 2) * 0.85 || ac.ias <= 36;
+      if ((canExit && ac.ias <= 65 && distToExit <= 0.08) || (!canExit && rolledOut)) {
+        if (canExit) { ac.x = txIn.exit.x; ac.y = txIn.exit.y; }
         ac.ias = 15;
         ac.state = "rwyExit"; ac.stateT = 0;
         ac.called = true;
@@ -938,9 +1012,31 @@ function stepAircraft(ac, dt) {
   }
 }
 
+/* Transmissions an AI controller will not sit on waiting for a gap. */
+function aiUrgent(ac) {
+  if (!ac || ac.remove) return false;
+  if (ac.emerg) return true;
+  /* an arrival closing on the runway that still has to be switched to tower */
+  if (ac.role === "arr" && ac.owner === "APP" && ac.state === "appCtl" &&
+      ac.app === "established" && finalGeom(ac, ac.rwy || G.arrRwy).along < 5) return true;
+  /* anything already on the pavement: it has to be told where to go */
+  if (["landedRoll", "rwyExit"].includes(ac.state)) return true;
+  return false;
+}
+
 function sameDirAhead(ac, o) {
   const brg = bearingTo(ac, o);
   return Math.abs(angDiff(brg, ac.hdg)) < 70;
+}
+
+/* Would a give way to b on the ground right now? True when b is close, is
+   ahead of a, and is nearer a's own next waypoint than a is. */
+function taxiYields(a, b) {
+  if (!a.taxiPath || a.taxiIdx >= a.taxiPath.length) return false;
+  if (dist2(a, b) >= 0.045) return false;
+  if (!sameDirAhead(a, b)) return false;
+  const wp = a.taxiPath[a.taxiIdx];
+  return dist2(b, wp) < dist2(a, wp);
 }
 
 function flightStep(ac, dt) {
@@ -967,8 +1063,9 @@ function flightStep(ac, dt) {
   if (ac.app === "cleared") {
     const R = ac.rwy || G.arrRwy;
     const g = finalGeom(ac, R);
-    // Increased ILS capture range to 100 miles to ensure far breakouts intercept properly
-    if (g.along > 1 && g.along < 100 && Math.abs(g.cross) < 2.0 &&
+    /* Wide enough that an aircraft sent 40+ miles down a stretched downwind
+       still captures on the way back, without capturing at cruise range. */
+    if (g.along > 1 && g.along < 60 && Math.abs(g.cross) < 2.0 &&
         Math.abs(angDiff(R.hdg, ac.hdg)) < 100) {
       ac.app = "established";
       ac.directFix = null;
@@ -1097,6 +1194,10 @@ function doGoAround(ac, why) {
 
 function touchdown(ac) {
   const R = ac.rwy || G.arrRwy;
+  /* Once the wheels are down the tower owns it. If the switch never went out
+     (a blocked approach frequency, or the player simply forgot), take it
+     anyway: otherwise nobody works it and it parks on the runway exit. */
+  if (ac.owner !== "TWR" && ac.owner !== G.playerPos) setOwner(ac, "TWR", true);
   ac.state = "landedRoll"; ac.stateT = 0;
   ac.alt = 0;
   ac.hdg = ac.targetHdg = R.hdg;
@@ -1133,13 +1234,19 @@ function checkSeparation() {
     const aRwy = a.rwy || (a.role === "arr" ? G.arrRwy : G.depRwy);
     const bRwy = b.rwy || (b.role === "arr" ? G.arrRwy : G.depRwy);
 
-    // 2. Terminal Visual Separation Area: Inside 6 miles and below 3500 ft, radar separation is suspended.
-    if (a.distField() < 6 && b.distField() < 6 && a.alt < 3500 && b.alt < 3500) {
+    /* 2. Simultaneous approaches to different runways. Real parallel and
+          converging operations run inside 3 nm of each other all day. */
+    if (aRwy && bRwy && aRwy.id !== bRwy.id &&
+        a.distField() < 12 && b.distField() < 12 && a.alt < 5000 && b.alt < 5000) {
       return true;
     }
 
-    // 3. Parallel approach exemption
-    if (aRwy && bRwy && aRwy.id !== bRwy.id && a.distField() < 12 && b.distField() < 12 && a.alt < 5000 && b.alt < 5000) {
+    /* 3. In-trail on the same final inside 5 miles, where the tower is
+          applying visual separation. The 2.5 nm in-trail minimum below
+          still applies outside that, so the sequence still has to be built. */
+    if (aRwy && bRwy && aRwy.id === bRwy.id &&
+        a.app === "established" && b.app === "established" &&
+        finalGeom(a, aRwy).along < 5 && finalGeom(b, bRwy).along < 5) {
       return true;
     }
     return false;
@@ -1380,7 +1487,8 @@ const CMD_PATTERNS = [
   { t: "toCtr", re: /\b(?:contact|monitor|call|over\s+to|switch\s+to)\s+(?:center|centre)\b(?:\s+\d+)?|\bcc\b/, f: () => ({}) },
   { t: "exit",  re: /\bexit\s+(?:left|right|\w+)?\s*when\s+able\b/,                  f: () => ({}) },
   { t: "ho",    re: /\bhand\s?off\b|\bflash\b|\bpoint\s+out\b/,                       f: () => ({}) },
-  { t: "stby",  re: /\bstand\s?by\b|\bhold\s+on\b/,                                  f: () => ({}) },
+  { t: "abort", re: /\b(?:abort|cancel|reject)\s+(?:the\s+)?take\s?off(?:\s+clearance)?\b|\btake\s?off\s+clearance\s+cancell?ed\b/, f: () => ({}) },
+  { t: "stby",  re: /\bstand\s?by\b(?:\s+(?:for\s+)?(\d{1,2})\s*(?:minutes?|mins?)?)?|\bhold\s+on\b/, f: m => ({ mins: m[1] ? +m[1] : null }) },
   { t: "rgr",   re: /\brog(?:er)?\b|\bthanks?\b|\bgood\s+day\b|\bwilco\b/,           f: () => ({}) },
 ];
 
@@ -1399,119 +1507,228 @@ function parseCommands(s) {
   if (ops.some(o => o.t === "monitor")) {
     for (let i = ops.length - 1; i >= 0; i--) if (ops[i].t === "taxi") ops.splice(i, 1);
   }
+  /* Standard phraseology puts the runway before the clearance: "runway two
+     seven right, cleared for takeoff", "runway two two left, cleared to
+     land". The clearance patterns only capture a runway that trails them, so
+     anything still un-runwayed picks up the one named elsewhere in the
+     transmission. Nearest preceding "runway NN" wins if there are several. */
+  const RWY_OPS = ["cto", "ctl", "luaw", "taxi", "ils"];
+  if (ops.some(o => RWY_OPS.includes(o.t) && !o.rwy)) {
+    const named = [];
+    const re = /\brunway\s+(\d{1,2}[lrc]?)\b/g;
+    let m;
+    while ((m = re.exec(s)) !== null) named.push({ at: m.index + 1, rwy: m[1].toUpperCase() });
+    if (named.length) {
+      for (const o of ops) {
+        if (!RWY_OPS.includes(o.t) || o.rwy) continue;
+        const before = named.filter(n => n.at <= o.at);
+        o.rwy = (before.length ? before[before.length - 1] : named[0]).rwy;
+      }
+    }
+  }
   return { ops, rest: work.trim() };
 }
 
-// ==========================================
-// 1. MAIN VOICE / INPUT ENTRY POINT
-// ==========================================
-async function handleControllerSpeech(transcriptText) {
-  console.log("Transmitted:", transcriptText);
-  
-  // Send it to your local Python Flask backend (running on port 5000)
-  await sendToAIBackend(transcriptText);
+/* =====================================================================
+   LLM PARSER BRIDGE
+   The grammar above covers standard phraseology and runs first, so a normal
+   clearance never waits on the network. The model is consulted for what the
+   grammar could not account for: an unrecognised transmission, an addressee
+   it could not resolve, or leftover text alongside an instruction it did
+   understand. Anything the model returns is translated into the same op
+   objects the grammar produces and pushed through the same queue, so
+   readbacks, scoring, pilot deviations and the traffic management
+   restrictions all behave identically either way.
+
+   Endpoint. AI_PARSER.url is fetched with POST and must answer with
+   {"intents":[{"callsign":"DAL484","action":"hdg","value":"270"}, ...]}.
+   Leave it as a relative path and it hits your own origin, which is what
+   you want in production: a serverless function on the same domain holds
+   the Groq key server-side. Point it at http://localhost:5000 for local
+   development against a script on your machine.
+
+   Two things that will bite otherwise:
+   - Never put a Groq API key in this file. It is a static page; the key
+     would ship to every visitor and be readable from view-source. The key
+     belongs in the endpoint, not the browser.
+   - A page served over HTTPS cannot call http://localhost. The browser
+     blocks it as mixed content. Same-origin relative paths avoid this.
+   ===================================================================== */
+const AI_PARSER = {
+  enabled: false,             // set true, or call aiParser(true), to use it
+  url: "/api/parse",          // same-origin function in production
+  timeoutMs: 2500,            // a frequency cannot wait longer than this
+  debug: false,
+};
+/* convenience toggle from the console: aiParser(true, "http://localhost:5000/parse") */
+function aiParser(on, url) {
+  AI_PARSER.enabled = !!on;
+  if (url) AI_PARSER.url = url;
+  sysLog(`LLM parser ${AI_PARSER.enabled ? "enabled, endpoint " + AI_PARSER.url : "disabled, using the built-in grammar"}.`);
+  return AI_PARSER;
 }
 
+/* What the model is told it is looking at, so it can resolve "the heavy on
+   final" or "the one behind him" to an actual callsign. */
+function aiContext() {
+  return {
+    facility: G.fac.icao,
+    position: G.playerPos,
+    zulu: zulu(),
+    arrRwy: G.arrRwy && G.arrRwy.id,
+    depRwy: G.depRwy && G.depRwy.id,
+    atis: G.atis ? { letter: G.atis.letter, windDir: G.atis.windDir, windSpd: G.atis.windSpd, altimeter: G.atis.qnh } : null,
+    aircraft: G.aircraft.filter(a => !a.remove && a.owner === G.playerPos).map(a => ({
+      callsign: a.cs, type: a.type, heavy: !!a.heavy, role: a.role,
+      state: a.state, altitude: Math.round(a.alt), speed: Math.round(a.ias),
+      heading: Math.round(a.hdg), runway: (a.rwy || (a.role === "arr" ? G.arrRwy : G.depRwy) || {}).id,
+      milesOut: a.role === "arr" ? +a.distField().toFixed(1) : null,
+      gate: a.role === "dep" ? a.gate : null,
+      destination: a.dest && a.dest.icao, origin: a.origin && a.origin.icao,
+      selected: G.selected === a,
+    })),
+  };
+}
 
-// ==========================================
-// 2. THE AI BRIDGE & BULLETPROOF FALLBACK
-// ==========================================
-async function sendToAIBackend(transcriptText) {
+/* addressee is the aircraft the grammar already resolved, or null if it could
+   not. handled lists the op types the grammar has already actioned, so the
+   model knows to return only what is left. */
+async function aiParseTransmission(raw, addressee, handled) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), AI_PARSER.timeoutMs);
+  const t0 = performance.now();
   try {
-    let response = await fetch('http://localhost:5000/parse', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ transcript: transcriptText })
+    const res = await fetch(AI_PARSER.url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        transcript: raw,
+        addressee: addressee ? addressee.cs : null,
+        handled: handled || [],
+        context: aiContext(),
+      }),
+      signal: ctl.signal,
     });
-
-    // If Flask returns a rate limit (429) or error, seamlessly fall back to local Regex
-    if (response.status === 429 || !response.ok) {
-      console.warn("AI Backend rate limit hit. Falling back to local Regex engine.");
-      return parseCommands(transcriptText); 
+    const ms = Math.round(performance.now() - t0);
+    if (!res.ok) {
+      sysLog(`LLM parser returned ${res.status} after ${ms} ms. Using the built-in grammar.`);
+      return false;
     }
-
-    let data = await response.json();
-    
-    // Safety check if JSON structure is empty or errored
-    if (!data.intents || data.intents.length === 0) {
-      console.log("No recognized intent from AI, checking local fallback...");
-      return parseCommands(transcriptText);
+    const data = await res.json();
+    if (AI_PARSER.debug) {
+      console.log(`LLM parser ${ms} ms`, data && data.intents);
+      sysLog(`LLM parser ${ms} ms, ${(data && data.intents || []).length} intent(s).`);
     }
-
-    console.log("AI Parsed Intents:", data.intents);
-    
-    // Loop through each intent the LLM found and execute your simulator logic
-    data.intents.forEach(intent => {
-      executeSimulatorCommand(intent.callsign, intent.action, intent.value);
-    });
-
-  } catch (error) {
-    // If Python server is closed or offline, fallback instantly so the game never breaks
-    console.error("Python backend offline. Routing to local Regex.", error);
-    return parseCommands(transcriptText);
+    AI_PARSER.lastMs = ms;
+    if (!data || !Array.isArray(data.intents) || !data.intents.length) return false;
+    let acted = false;
+    for (const it of data.intents) if (applyAiIntent(it, addressee)) acted = true;
+    return acted;
+  } catch (e) {
+    /* offline, blocked or too slow: the grammar takes it, so a dead endpoint
+       never costs you a transmission */
+    const ms = Math.round(performance.now() - t0);
+    if (AI_PARSER.debug) {
+      console.warn(`LLM parser unavailable after ${ms} ms:`, e && e.message);
+      sysLog(`LLM parser unavailable after ${ms} ms. Using the built-in grammar.`);
+    }
+    return false;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
+/* Model action -> the op object the grammar would have produced. Returning
+   null means "the engine does not model this", which is handled below. */
+const AI_ACTIONS = {
+  hdg:     (n, v) => n == null ? null : { t: "hdg", dir: /\bleft\b/i.test(v) ? "L" : /\bright\b/i.test(v) ? "R" : null, deg: n },
+  alt:     n => n == null ? null : { t: "alt", val: n },
+  spd:     n => n == null ? null : { t: "spd", val: n },
+  seq:     n => n == null ? null : { t: "seq", n },
+  dct:     (n, v) => { const f = (String(v).match(/[A-Za-z]{2,6}/) || [])[0]; return f ? { t: "dct", fix: f.toUpperCase() } : null; },
+  ils:     (n, v) => ({ t: "ils", rwy: (String(v).match(/\d{1,2}[LRClrc]?/) || [""])[0].toUpperCase() }),
+  taxi:    (n, v) => ({ t: "taxi", rwy: (String(v).match(/\d{1,2}[LRClrc]?/) || [""])[0].toUpperCase() }),
+  cto:     (n, v) => ({ t: "cto", rwy: (String(v).match(/\d{1,2}[LRClrc]?/) || [""])[0].toUpperCase() }),
+  ctl:     (n, v) => ({ t: "ctl", rwy: (String(v).match(/\d{1,2}[LRClrc]?/) || [""])[0].toUpperCase() }),
+  luaw:    (n, v) => ({ t: "luaw", rwy: (String(v).match(/\d{1,2}[LRClrc]?/) || [""])[0].toUpperCase() }),
+  expect:  (n, v) => ({ t: "expect", rwy: (String(v).match(/\d{1,2}[LRClrc]?/) || [""])[0].toUpperCase() }),
+  push:    () => ({ t: "push" }),
+  hold:    () => ({ t: "hold" }),
+  cont:    () => ({ t: "cont" }),
+  abort:   () => ({ t: "abort" }),
+  ga:      () => ({ t: "ga" }),
+  stby:    n => ({ t: "stby", mins: n }),
+  rgr:     () => ({ t: "rgr" }),
+  ho:      () => ({ t: "ho" }),
+  exit:    () => ({ t: "exit" }),
+  rbok:    () => ({ t: "rbok" }),
+  rbbad:   () => ({ t: "rbbad" }),
+  monitor: () => ({ t: "monitor" }),
+  toTwr:   () => ({ t: "toTwr" }),
+  toGnd:   () => ({ t: "toGnd" }),
+  toApp:   () => ({ t: "toApp" }),
+  toCtr:   () => ({ t: "toCtr" }),
+  toDel:   () => ({ t: "toDel" }),
+  dvs:     () => ({ t: "dvs" }),
+  rns:     () => ({ t: "rns" }),
+};
 
-// ==========================================
-// 3. COMMAND ROUTER (JSON -> SIMULATOR STATE)
-// ==========================================
-function executeSimulatorCommand(callsign, action, value) {
-  let aircraft = simulationState.aircrafts.find(a => a.callsign === callsign);
-  
-  if (!aircraft) {
-    console.warn(`Aircraft ${callsign} not found on frequency.`);
-    return;
+function applyAiIntent(intent, addressee) {
+  if (!intent || !intent.action) return false;
+  const want = String(intent.callsign || "").toUpperCase().replace(/\s+/g, "");
+  let ac = G.aircraft.find(a => !a.remove && a.cs.toUpperCase() === want);
+  if (!ac && addressee && !addressee.remove) ac = addressee;
+  if (!ac && want) {
+    /* the model may hand back a spoken form: run it past the same matcher
+       the grammar uses before giving up */
+    const [m] = matchCallsign(normalizeTx(String(intent.callsign)));
+    ac = m || null;
+  }
+  if (!ac && G.selected && !G.selected.remove) ac = G.selected;
+  if (!ac) { sysLog(`LLM parser named "${intent.callsign}", who is not on your frequency.`); return false; }
+
+  const action = String(intent.action).toLowerCase();
+  const val = intent.value == null ? "" : String(intent.value);
+  const numTok = (val.match(/-?\d+/) || [])[0];
+  const num = numTok == null ? null : +numTok;
+
+  if (action === "none" || action === "noop") {
+    /* the model decided it was a check-in, not an instruction */
+    G.selected = ac; G.hooks.strips();
+    return true;
   }
 
-  // Universal dynamic handler for ANY action the LLM generates
-  let match;
-  switch (action) {
-    case "hdg":
-      match = value.match(/\d+/);
-      if (match) aircraft.setHeading(parseInt(match[0]));
-      break;
-      
-    case "spd":
-      match = value.match(/\d+/);
-      if (match) aircraft.setSpeed(parseInt(match[0]));
-      break;
-      
-    case "alt":
-      match = value.match(/\d+/);
-      if (match) aircraft.setAltitude(parseInt(match[0]));
-      break;
-
-    case "stby":
-      aircraft.standbyAt = G.t;
-      let minsMatch = value.match(/\d+/);
-      aircraft.standbyDur = minsMatch ? parseInt(minsMatch[0]) * 60 : 240;
-      aircraft.reminders = 0;
-      aircraft.lastNagAt = G.t;
-      aircraft.say(`Standing by for ${value}, ${aircraft.spoken()}.`);
-      break;
-
-    case "hold":
-      aircraft.holdPosition();
-      aircraft.say(`Holding position, ${aircraft.spoken()}.`);
-      break;
-
-    case "abort":
-      aircraft.abortTakeoff();
-      aircraft.say(`Aborting takeoff, ${aircraft.spoken()}.`);
-      break;
-
-    default:
-      // UNIVERSAL CATCH-ALL: If it's an action we didn't explicitly hardcode, 
-      // dynamically accept it, log it, and have the pilot acknowledge it naturally!
-      console.log(`Dynamic Universal Intent [${action}]: ${value} for ${callsign}`);
-      aircraft.standbyAt = G.t;
-      aircraft.standbyDur = 180;
-      aircraft.say(`Roger ${value}, ${aircraft.spoken()}.`);
-      break;
+  const build = AI_ACTIONS[action];
+  const op = build ? build(num, val) : null;
+  if (op) {
+    G.selected = ac; G.hooks.strips();
+    ac.pending = ac.pending && ac.pending.ops
+      ? { ops: ac.pending.ops.concat([op]), due: ac.pending.due }
+      : { ops: [op], due: G.t + rnd(0.8, 1.8) };
+    return true;
   }
+
+  /* Anything the engine does not model. Rather than dropping it, the pilot
+     acknowledges the way a real one would, and it goes on the record so you
+     can see the sim took no action on it. */
+  aiUnmodelled(ac, action, val);
+  return true;
+}
+
+function aiUnmodelled(ac, action, val) {
+  G.selected = ac; G.hooks.strips();
+  ac.standbyAt = G.t; ac.standbyDur = 180; ac.reminders = 0; ac.lastNagAt = G.t;
+  const said = val ? val.replace(/[.]+$/, "") : action;
+  setTimeout(() => {
+    if (ac.remove) return;
+    ac.say(pick([
+      `Roger, ${said}, ${ac.spoken()}.`,
+      `${ac.spoken()}, roger, ${said}.`,
+      `Copy that, ${ac.spoken()}.`,
+      `Wilco, ${ac.spoken()}.`,
+    ]));
+  }, rnd(700, 1400));
+  sysLog(`${ac.cs} acknowledged "${action}". The engine has no rule for that, so nothing changed on the scope.`);
 }
 
 /* ---- IFR clearance grading (player on DEL) ---- */
@@ -1760,7 +1977,7 @@ function execOps(ac, ops) {
         break;
       }
       case "hold":
-        if (["taxi", "taxiIn"].includes(ac.state)) { ac.holdFlag = true; parts.push("holding position"); }
+        if (["taxi", "taxiIn"].includes(ac.state)) { ac.holdFlag = true; ac.holdUntil = 0; parts.push("holding position"); }
         else if (["taxiWait", "gndCall", "clxOk", "holdShortG", "holdShort"].includes(ac.state)) {
           ac.holdFlag = true; parts.push("holding position");
         } else unable.push("hold position");
@@ -1790,7 +2007,7 @@ function execOps(ac, ops) {
         break;
       case "cont":
         if (ac.holdFlag) {
-          ac.holdFlag = false; ac.giveWayTo = null;
+          ac.holdFlag = false; ac.holdUntil = 0; ac.giveWayTo = null;
           parts.push("continue taxi");
         } else unable.push("continue");
         break;
@@ -1905,9 +2122,37 @@ function execOps(ac, ops) {
         initiateHandoff(ac);
         return;                              // a coordination action, not a radio call
       case "stby":
+        /* "stand by two minutes" holds the nag off for the time you promised,
+           not a fixed window, so telling somebody a number means something */
         ac.standbyAt = G.t;
-        parts.push("standing by");
+        ac.standbyDur = op.mins ? Math.min(op.mins, 60) * 60 : 240;
+        ac.reminders = 0;
+        ac.lastNagAt = G.t;
+        parts.push(op.mins ? `standing by ${numWords(String(op.mins))} minute${op.mins === 1 ? "" : "s"}` : "standing by");
         break;
+      case "abort": {
+        /* Cancelling a takeoff clearance. Realistically this only works while
+           they can still stop: past roughly 100 knots they are committed. */
+        if (ac.role !== "dep" || !["holdShort", "lineup", "rolling"].includes(ac.state)) {
+          unable.push("that, we're not taking off"); break;
+        }
+        if (ac.state === "rolling" && ac.ias >= 100) {
+          unable.push("the abort, we're already committed, continuing"); break;
+        }
+        const aR = ac.rwy || G.depRwy;
+        if (ac.state === "rolling") {
+          ac.say(`Aborting, aborting, ${ac.spoken()}.`);
+          G.counters.ga++;
+        }
+        ac.state = "holdShort"; ac.stateT = 0;
+        ac.ias = 0; ac.alt = 0;
+        ac.x = aR.thr.x; ac.y = aR.thr.y; ac.hdg = ac.targetHdg = aR.hdg;
+        ac.called = true;
+        ac.standbyAt = G.t; ac.standbyDur = 120;
+        parts.push("takeoff clearance cancelled, holding short");
+        G.hooks.strips();
+        break;
+      }
       case "rgr":
         if (ops.length === 1) return;          // a bare acknowledgment needs no readback
         break;
@@ -1923,10 +2168,38 @@ function execOps(ac, ops) {
 }
 
 /* the player keyed the mic */
+/* Entry point for everything you say or type. The transmission is logged
+   straight away so the frequency never appears to lag, then it goes to the
+   LLM parser if one is configured, and to the built-in grammar otherwise or
+   whenever the model has nothing for us. */
 function playerTransmit(raw) {
   raw = raw.trim();
   if (!raw) return;
   xmit(G.playerPos, "YOU", "you", raw, null);
+  playerGrammar(raw);
+}
+
+/* Hand a transmission to the model, and run onMiss if it comes back with
+   nothing useful. Returns true when it has taken responsibility, so the
+   caller can return instead of doing its own thing. The point of this
+   ordering is that standard phraseology never waits on the network: the
+   model is consulted for what the grammar could not account for. */
+function aiAssist(raw, ac, handled, onMiss) {
+  if (!AI_PARSER.enabled) return false;
+  aiParseTransmission(raw, ac, handled)
+    .then(applied => { if (!applied && onMiss) onMiss(); })
+    .catch(() => { if (onMiss) onMiss(); });
+  return true;
+}
+
+/* Words that carry no instruction, so leftover text made only of these does
+   not need a model call. */
+const AI_FILLER = /^(?:and|then|also|please|thanks?|thank|you|sir|ma'?am|the|a|an|to|too|for|me|us|him|her|them|it|that|this|is|are|was|be|will|would|can|could|ok|okay|alright|roger|wilco|now|so|uh|um|er|with|of|at|on|in|your|my|we|i|got|get|there|here|out|up|down|go|going|good|great|nice|yeah|yes|no|not|do|does|did|have|has|had|just|like|well|right|sure|thats|its)$/;
+function aiLeftoverWords(text) {
+  return String(text || "").split(/\s+/).filter(w => w && !AI_FILLER.test(w));
+}
+
+function playerGrammar(raw) {
   const norm = normalizeTx(raw);
 
   // Check for landline voice commands first
@@ -1996,14 +2269,26 @@ function playerTransmit(raw) {
   }
 
   let [ac, rest, startIdx] = matchCallsign(norm);
-  if (G.selected && !G.selected.remove) {
-    if (!ac || (ac !== G.selected && startIdx > 0)) {
-      ac = G.selected;
-      rest = norm;
-    }
+  /* Whoever you name first is who you are talking to. Leading filler
+     ("and", "ok", "roger") does not change that, so it is skipped over.
+     A callsign that only turns up deep in the sentence is almost always a
+     traffic reference ("American 100, traffic is Delta 484 off your left"),
+     so in that case the strip you already have selected keeps the call. */
+  const LEAD_FILLER = /^(?:and|ok|okay|alright|right|roger|so|uh|um|er|now|also|hey|yeah|yes)$/;
+  const leadToks = norm.split(/\s+/);
+  let lead = 0;
+  while (lead < leadToks.length && LEAD_FILLER.test(leadToks[lead])) lead++;
+  const addressed = !!ac && startIdx >= 0 && startIdx <= lead;
+  if (G.selected && !G.selected.remove && !addressed) {
+    ac = G.selected;
+    rest = norm;
   }
 
   if (!ac) {
+    /* the model sees the full traffic list, so it can resolve things the
+       matcher cannot: "the heavy on final", "the one behind him" */
+    if (aiAssist(raw, null, [], () =>
+        sysLog("Nobody answered. Address a callsign, or click a strip/target first."))) return;
     sysLog("Nobody answered. Address a callsign, or click a strip/target first."); return;
   }
   G.selected = ac;
@@ -2053,7 +2338,14 @@ function playerTransmit(raw) {
     [/\bsay\s+(?:your\s+)?(?:squawk|beacon|code)\b|\bconfirm\s+squawk\b/,
       a => `squawking ${numWords(a.sqk)}`],
     [/\bsay\s+(?:your\s+)?(?:destination|going)\b|\bconfirm\s+destination\b/,
-      a => a.role === "dep" ? `we're going to ${ac.dest.city}` : `we're landing here, out of ${ac.origin.city}`],
+      a => a.role === "dep" ? `we're going to ${a.dest.city}`
+                            : `we're landing here, out of ${a.origin ? a.origin.city : "the field"}`],
+    [/\bsay\s+(?:your\s+)?(?:edct|release\s+time|wheels\s*up)\b|\bwhat.*(?:edct|release\s+time|wheels\s*up)\b/,
+      a => { const t = typeof edctOf === "function" ? edctOf(a) : null;
+        if (!t) return "we don't have a wheels-up time";
+        const mm = Math.round((t - G.t) / 60);
+        return G.t < t ? `our wheels-up time is ${numWords(edctClock(t))} zulu, about ${numWords(Math.max(1, mm))} minute${mm === 1 ? "" : "s"} from now`
+                       : `our wheels-up time was ${numWords(edctClock(t))} zulu, we're released`; }],
     [/\bsay\s+(?:your\s+)?fuel\b|\bhow.*fuel\b|\bfuel\s+(?:state|remaining)\b/,
       a => `we've got about ${numWords(Math.floor(rnd(45, 180)))} minutes of fuel`],
     [/\bsouls\s+on\s+board\b|\bpob\b/,
@@ -2134,12 +2426,30 @@ function playerTransmit(raw) {
     }
     return;
   }
-  const { ops } = parseCommands(rest);
+  const { ops, rest: leftover } = parseCommands(rest);
   if (!ops.length) {
-    setTimeout(() => { if (!ac.remove) ac.say(`${ac.spoken()}, say again? ${cap(pilotRequest(ac))}.`); }, 800);
+    /* Nothing the grammar models. Give the model a go first. Failing that, a
+       real pilot acknowledges a plausible transmission rather than asking for
+       a repeat, so that is what happens. The exception is anything carrying
+       what looks like a clearance value: roger-ing a heading or an altitude
+       we failed to parse would leave you believing they complied when nothing
+       actually happened, so those still get a "say again". */
+    const fallback = () => {
+      const words = rest.split(/\s+/).filter(Boolean);
+      const looksLikeClearance = /\b\d{3,5}\b/.test(rest) ||
+        /\b(?:climb|descend|maintain|heading|speed|turn|knots|feet|thousand|altitude|level|squawk)\b/.test(rest);
+      if (words.length >= 2 && !looksLikeClearance) aiUnmodelled(ac, "that", rest);
+      else setTimeout(() => { if (!ac.remove) ac.say(`${ac.spoken()}, say again? ${cap(pilotRequest(ac))}.`); }, 800);
+    };
+    if (aiAssist(raw, ac, [], fallback)) return;
+    fallback();
     return;
   }
+  /* The grammar understood part of it. Queue that straight away so the
+     understood half never waits on the network, then ask the model about
+     whatever text it could not account for. */
   ac.pending = { ops, due: G.t + rnd(0.8, 1.8) };
+  if (aiLeftoverWords(leftover).length >= 2) aiAssist(raw, ac, ops.map(o => o.t), null);
 }
 
 const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
@@ -2251,13 +2561,24 @@ function tmuRoll() {
     tmuSay(`Traffic management: ${miles} miles in trail over ${fx.name}, effective now.`);
   } else if (roll < 0.8 && !TMU.gdp) {
     TMU.gdp = { until: G.t + rnd(900, 1800) };
-    for (const a of G.aircraft) {
-      if (a.role === "dep" && (a.state === "gate" || a.state === "gndCall") && !TMU.edct.has(a.cs)) {
-        TMU.edct.set(a.cs, G.t + rnd(120, 600));
-      }
-    }
-    tmuSay("Traffic management: ground delay programme in effect. Departures still at the gate will be issued wheels-up times.");
+    /* everything already on the ground gets a slot */
+    for (const a of G.aircraft) if (a.role === "dep" && a.state !== "out") assignEDCT(a);
+    const n = TMU.edct.size;
+    tmuSay(`Traffic management: ground delay programme in effect for the next ${Math.round((TMU.gdp.until - G.t) / 60)} minutes. ${n} departure${n === 1 ? "" : "s"} ${n === 1 ? "has" : "have"} a wheels-up time. Check the TMU panel.`);
   }
+}
+/* A wheels-up time, metered so the queue releases one at a time rather
+   than the whole bank landing in the same window. */
+function assignEDCT(ac) {
+  if (!TMU.gdp || ac.role !== "dep") return null;
+  if (!TMU.edct.has(ac.cs)) {
+    const slot = TMU.edct.size;
+    TMU.edct.set(ac.cs, G.t + 150 + slot * rnd(90, 200));
+  }
+  return TMU.edct.get(ac.cs);
+}
+function edctOf(ac) {
+  return TMU.gdp && ac.role === "dep" ? (TMU.edct.get(ac.cs) || assignEDCT(ac)) : null;
 }
 /* is this departure allowed to go right now? */
 function tmuHold(ac) {
@@ -2265,12 +2586,10 @@ function tmuHold(ac) {
     return `a ground stop for ${TMU.groundStop.dest}`;
   }
   if (TMU.gdp && ac.role === "dep") {
-    if (TMU.edct.has(ac.cs)) {
-      const t = TMU.edct.get(ac.cs);
-      if (G.t < t) {
-        const mm = Math.max(1, Math.round((t - G.t) / 60));
-        return `a wheels-up time, ${mm} minute${mm === 1 ? "" : "s"} from now`;
-      }
+    const t = edctOf(ac);
+    if (t && G.t < t) {
+      const mm = Math.max(1, Math.round((t - G.t) / 60));
+      return `a wheels-up time of ${edctClock(t)} zulu, ${mm} minute${mm === 1 ? "" : "s"} from now`;
     }
   }
   return null;
@@ -2521,9 +2840,6 @@ function intercomNags() {
   }
 }
 
-// Disable the buggy default safety scanner to prevent phantom go-arounds and false runway incursions
-window.safetyLogicScan = function() {}; 
-
 /* =====================================================================
    SCENARIO / SESSION
    ===================================================================== */
@@ -2534,7 +2850,7 @@ function genAtis(fac, cfg) {
   const windDir = Math.round(norm360(lo + rnd(0, span)) / 10) * 10 || 360;
   const windSpd = Math.floor(rnd(4, 18));
   const qnh = (29.6 + rnd(0, 0.8)).toFixed(2).replace(".", "");
-  const tod = pick(["day", "day", "dusk", "night"]);
+  const tod = fieldTod(fac);
   const temp = Math.floor(rnd(4, 33));
   return {
     letter, windDir, windSpd, qnh, tod, temp, dew: temp - Math.floor(rnd(2, 13)),
@@ -2552,6 +2868,7 @@ function atisText() {
 
 function startSession(facIdx, playerPos, density) {
   const F = FACILITIES[facIdx];
+  G.t = 0; G.epochMs = Date.now();   // anchor the Zulu clock before anything reads it
   G.fac = F;
   G.playerPos = playerPos;
   G.density = density;
@@ -2560,7 +2877,7 @@ function startSession(facIdx, playerPos, density) {
   G.cfg = cfg;
   G.arrRwy = resolveRwy(cfg.arr);
   G.depRwy = resolveRwy(cfg.dep);
-  if (typeof prepareRoutes === "function") prepareRoutes(F, G.arrRwy.id, G.depRwy.id);
+  if (typeof prepareRoutes === "function") prepareRoutes(F);
   G.atis = genAtis(F, cfg);
   G.atis.visSM = VIS_SM[G.atis.vis] || 10;
   if (Math.random() < 0.18) {                       // occasional low-visibility day
@@ -2568,7 +2885,7 @@ function startSession(facIdx, playerPos, density) {
     G.atis.visSM = VIS_SM[G.atis.vis];
     G.atis.sky = "overcast six hundred";
   }
-  G.t = 0; G.score = 0; G.points = 0;
+  G.score = 0; G.points = 0;
   G.aircraft = []; G.arrSeq = [];
   G.channels = {}; G.conflicts = new Set(); G.proxPairs = new Set();
   G.counters = { clx: 0, taxi: 0, tko: 0, ldg: 0, ils: 0, ho: 0, sep: 0, ga: 0 };
@@ -2609,7 +2926,7 @@ function spawnDep(delay = 0) {
   if (G.aircraft.some(o => o.cs === ac.cs)) return;
   ac.callAt = G.t + rnd(4, 20) + delay;
   G.aircraft.push(ac);
-  if (typeof TMU !== "undefined" && TMU.gdp && !TMU.edct.has(ac.cs)) TMU.edct.set(ac.cs, G.t + rnd(120, 600));
+  if (typeof TMU !== "undefined" && TMU.gdp) assignEDCT(ac);
   G.hooks.strips();
 }
 function spawnArr() {
@@ -2632,8 +2949,8 @@ function randomEvent() {
     const tx = G.aircraft.find(a => a.state === "taxi" && !a.holdFlag);
     if (tx) {
       tx.holdFlag = true;
+      tx.holdUntil = G.t + rnd(15, 30);
       tx.say(`${tx.spoken()}, we need a minute here, sorting out a cabin issue.`);
-      setTimeout(() => { if (!tx.remove) { tx.holdFlag = false; tx.say(`${tx.spoken()}, we're moving again, thanks.`); } }, rnd(15000, 30000) / G.speed);
     }
   } else {
     spawnArr(); spawnArr();                        // a small arrival push

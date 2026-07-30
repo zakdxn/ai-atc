@@ -123,10 +123,8 @@ function renderTabs() {
     };
   });
 }
-function fmtClock(t) {
-  const s = Math.floor(t);
-  return `${String(Math.floor(s / 3600)).padStart(2, "0")}:${String(Math.floor(s / 60) % 60).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
-}
+/* real UTC, anchored at connect (see zulu() in engine.js) */
+function fmtClock(t) { return zuluHMS(t); }
 function renderLog() {
   const logEl = document.getElementById("log");
   const rows = (G.channels[activeTab] || []).slice(-120);
@@ -158,8 +156,10 @@ function stripHtml(ac, mine) {
     : "";
   const nxt = nextPosFor(ac);
   
-  const edctStr = (typeof TMU !== "undefined" && TMU.edct.has(ac.cs) && G.t < TMU.edct.get(ac.cs)) 
-    ? `<div class="fs-rte" style="color:var(--orange)"><i>EDCT</i>${fmtClock(TMU.edct.get(ac.cs))}</div>` : "";
+  const ed = typeof edctOf === "function" ? edctOf(ac) : null;
+  const edctStr = ed
+    ? `<div class="fs-rte" style="color:${G.t < ed ? "var(--orange)" : "var(--accent)"}"><i>EDCT</i>${edctClock(ed)}Z${
+        G.t < ed ? ` &nbsp;hold ${Math.max(1, Math.round((ed - G.t) / 60))} min` : " &nbsp;released"}</div>` : "";
 
   const R = ac.rwy || (ac.role === "dep" ? G.depRwy : G.arrRwy);
   const rwyOverrideStr = ac.rwy ? ` <span style="color:var(--orange); font-weight:bold;">[RWY ${R.id}]</span>` : "";
@@ -313,7 +313,7 @@ function renderIntercom() {
 
 /* ---------------- header ---------------- */
 function renderHeader() {
-  document.getElementById("clock").textContent = fmtClock(G.t);
+  document.getElementById("clock").textContent = fmtClock(G.t) + "Z";
   document.getElementById("scScore").textContent = G.score;
   const r = ratingFor(career.pts);
   document.getElementById("scRating").textContent = career.sandbox ? r.id + "·SB" : r.id;
@@ -498,6 +498,38 @@ document.getElementById("btnTdls").onclick = () => {
     if (ac && sendPDC(ac)) { b.textContent = "SENT"; b.disabled = true; }
   });
   document.getElementById("tdls").classList.add("open");
+};
+document.getElementById("btnTmu").onclick = () => {
+  if (!G.running) return;
+  const el = document.getElementById("tmucard");
+  const active = [];
+  if (TMU.groundStop) active.push([`GROUND STOP · ${TMU.groundStop.dest}`,
+    `Due to ${TMU.groundStop.reason}. Ends ${edctClock(TMU.groundStop.until)}Z. Hold all ${TMU.groundStop.dest} departures at the gate.`]);
+  if (TMU.gdp) active.push(["GROUND DELAY PROGRAMME",
+    `In effect until ${edctClock(TMU.gdp.until)}Z. Every departure has a wheels-up time; nobody rolls before theirs.`]);
+  if (TMU.mit) active.push([`${TMU.mit.miles} MILES IN TRAIL · ${TMU.mit.fix}`,
+    `Until ${edctClock(TMU.mit.until)}Z. Space departures over ${TMU.mit.fix} accordingly.`]);
+  const deps = G.aircraft.filter(x => x.role === "dep" && !x.remove)
+    .map(x => ({ x, e: edctOf(x) }))
+    .filter(o => o.e)
+    .sort((p, q) => p.e - q.e);
+  el.innerHTML = `
+    <button class="close" onclick="document.getElementById('tmu').classList.remove('open')">CLOSE</button>
+    <h2>TRAFFIC MANAGEMENT</h2>
+    <p class="dimtxt">Current time <b>${edctClock(G.t)}Z</b>. These initiatives are enforced: an aircraft under a ground
+    stop or before its wheels-up time will refuse pushback and takeoff, and the AI tower will not roll it either.</p>
+    <h4>ACTIVE INITIATIVES</h4>
+    ${active.length ? `<table>${active.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("")}</table>`
+                    : `<p class="dimtxt">None. Normal operations.</p>`}
+    ${deps.length ? `<h4>WHEELS-UP TIMES</h4>
+      <table><tr><td><b>FLIGHT</b></td><td><b>DEST</b></td><td><b>EDCT</b></td><td><b>STATUS</b></td></tr>
+      ${deps.map(({ x, e }) => `<tr><td>${x.cs}</td><td>${x.dest.icao}</td><td>${edctClock(e)}Z</td>
+        <td style="color:${G.t < e ? "var(--orange)" : "var(--accent)"}">${G.t < e
+          ? "holding, " + Math.max(1, Math.round((e - G.t) / 60)) + " min"
+          : "released, may go"}</td></tr>`).join("")}</table>` : ""}
+    <p class="dimtxt">Ask any aircraft <code>say your EDCT</code> and they will read their wheels-up time back to you.
+    Clearance Delivery issues it with the clearance, and it rides along on a PDC.</p>`;
+  document.getElementById("tmu").classList.add("open");
 };
 document.getElementById("btnSop").onclick = () => {
   if (!G.running) return;

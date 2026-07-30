@@ -174,12 +174,13 @@ function wxTick(dt) {
 
   /* aircraft ask to deviate around a cell in front of them */
   for (const ac of G.aircraft) {
-    if (ac.alt < 3000 || ac.remove || ac.app === "established" || ac.wxAsked) continue;
+    if (ac.alt < 3000 || ac.remove || ac.app === "established") continue;
+    if (ac.wxAsked && G.t < ac.wxAsked) continue;
     if (ac.owner !== G.playerPos) continue;
     for (const c of WX.cells) {
       const ahead = { x: ac.x + Math.sin(d2r(ac.hdg)) * 8, y: ac.y + Math.cos(d2r(ac.hdg)) * 8 };
       if (Math.hypot(ahead.x - c.x, ahead.y - c.y) < c.r + 1.5) {
-        ac.wxAsked = true;
+        ac.wxAsked = G.t + 420;
         ac.say(pick([
           `${ac.spoken()}, we're painting a cell about ${Math.round(Math.hypot(ac.x - c.x, ac.y - c.y))} ahead, request deviation ${pick(["left", "right"])} of course.`,
           `${ac.spoken()}, request ${pick(["twenty", "thirty"])} degrees ${pick(["left", "right"])} for weather.`,

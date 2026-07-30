@@ -1,52 +1,204 @@
-# AI ATC
+# AI ATC: the voice-to-intent endpoint
 
-A VATSIM-style air traffic control simulator that runs entirely in your browser.
-You are the controller; every pilot and every other controller position is an AI.
+This is the small server that lets the pilots understand open-ended speech.
+The game sends it a transmission plus the current traffic picture; it asks
+Groq to turn that into structured intents and sends them back.
 
-Think SayIntentions.ai, inverted: instead of AI ATC talking to you as a pilot,
-AI pilots (and AI colleague controllers) talk to you while you work a position.
+It exists for one reason: **the Groq API key must never be in the game.**
+`engine.js` is downloaded by every visitor, so a key in it is readable from
+view-source. It lives here instead, as a Worker secret.
 
-## Features
+## How the parser is wired
 
-- **All 22 VATUSA facilities**: the 20 CONUS ARTCCs plus ZAN Anchorage and HCF
-  Honolulu, each with its primary airport, runway configurations selected by
-  randomized wind, SIDs/STARs, entry fixes and per-position frequencies.
-- **Every VATSIM position**: Clearance Delivery, Ground, Tower,
-  Approach/Departure and Center, gated by VATSIM-style ratings (S1/S2/S3/C1)
-  earned through points, with a sandbox override. AI controllers staff every
-  position you don't hold and work traffic on their own frequencies.
-- **Session SOPs**: the SOP button lists the live runway configuration, initial
-  altitude, departure frequency, SIDs and per-position procedures, so you always
-  know exactly what to issue.
-- **Full flight lifecycle**: gate, IFR clearance (CRAFT format, with pilot
-  readback errors you must catch), pushback and taxi, takeoff, departure,
-  enroute, and arrivals from center handoff all the way to the gate. Flight
-  strips pass between position bays on every handoff.
-- **CRC-style displays**: STARS terminal radar (black scope, video map, compass
-  rose, flight plan list), ASDE-X surface radar (teal, black runways, DCB button
-  bar), and a top-down Tower Cab with a METAR bar. Wheel zooms, dragging pans,
-  clicking a target or datablock selects it.
-- **Interactive radio comms**: full phraseology or VATSIM shorthand
-  (`dal123 t l 270 d 40`), typed or spoken via push-to-talk (hold the PTT button
-  or Tab). Pilots understand conversational radio too: standby, say again,
-  roger, partial clearances given piecemeal. Responses draw from phrase pools so
-  the frequency never sounds canned. Per-speaker synthesized voices with radio
-  squelch effects; monitor any AI frequency; landline intercom to the other
-  positions with traffic-aware replies.
-- **Separation monitoring**: 3 nm / 1,000 ft (2.5 nm on final), conflict
-  alerts, go-arounds, runway protection on shared-runway fields, scoring.
+The game's built-in grammar runs **first** and handles standard phraseology
+with no network call at all. This endpoint is consulted only when:
 
-## Running it
+- nothing in the transmission was recognised,
+- the game could not work out which aircraft you meant, or
+- it understood part of the transmission and there was text left over.
 
-It's a static site with no build and no backend. Open `index.html` in Chrome or
-Edge (best speech support), serve the folder with any static server, or enable
-GitHub Pages on this repo (Settings, then Pages, deploy from branch `main`,
-root folder).
+So a normal "runway 27R, cleared for takeoff" is instant and costs nothing.
+"Slow the heavy on final and bring him around for another look" comes here.
 
-## Notes
+If this endpoint is missing, slow, erroring or returns nothing, the game
+falls back to its grammar. A dead endpoint never costs you a transmission.
 
-Voices use the browser's speech synthesis with per-speaker variation plus
-WebAudio radio effects. Airport geometry and procedures are simplified
-approximations for gameplay, not navigational data, and the Tower Cab uses
-synthesized imagery because a static site cannot ship licensed satellite
-photography.
+---
+
+## Setup
+
+You need a free Cloudflare account and a Groq API key.
+
+### 1. Get a Groq key
+
+Sign in at <https://console.groq.com>, create an API key, copy it.
+
+### 2. Deploy the Worker
+
+From this `worker/` directory:
+
+```sh
+npx wrangler login
+npx wrangler deploy
+```
+
+Wrangler prints the URL it deployed to, something like
+`https://ai-atc-parse.YOUR-SUBDOMAIN.workers.dev`. Keep it.
+
+### 3. Give it the key
+
+```sh
+npx wrangler secret put GROQ_API_KEY
+```
+
+Paste the key when prompted. It is stored encrypted and is never in the repo.
+
+### 4. Tell it which origins may call it
+
+Edit `ALLOWED_ORIGINS` in `wrangler.toml` to your GitHub Pages origin, then
+`npx wrangler deploy` again. Mine is pre-filled as a guess:
+
+```toml
+ALLOWED_ORIGINS = "https://zakdxn.github.io,http://localhost:8000"
+```
+
+Get it exactly right: scheme and host, no path, no trailing slash. If the
+game is at `https://zakdxn.github.io/ai-atc/`, the origin is
+`https://zakdxn.github.io`.
+
+### 5. Point the game at it
+
+In the browser console, on the game page:
+
+```js
+aiParser(true, "https://ai-atc-parse.YOUR-SUBDOMAIN.workers.dev")
+```
+
+To make it the default, set it in `engine.js`:
+
+```js
+const AI_PARSER = {
+  enabled: true,
+  url: "https://ai-atc-parse.YOUR-SUBDOMAIN.workers.dev",
+  ...
+};
+```
+
+That URL is fine to commit. The key is not, and is not here.
+
+### 6. Check it
+
+```js
+AI_PARSER.debug = true;
+```
+
+Then say something the grammar will not know, like *"give me a three sixty
+for spacing"*. The comms log will show how long the call took and how many
+intents came back. `AI_PARSER.lastMs` holds the most recent timing.
+
+---
+
+## Running locally instead
+
+If you would rather keep everything on your machine, serve the game over
+`http://localhost` and run any endpoint you like there:
+
+```js
+aiParser(true, "http://localhost:5000/parse")
+```
+
+**This only works when the game is also on `http://localhost`.** An HTTPS page
+cannot call `http://localhost` — the browser blocks it as mixed content. So
+this is for local development, not for the deployed site.
+
+---
+
+## Choosing a model
+
+`GROQ_MODEL` in `wrangler.toml` defaults to `llama-3.1-8b-instant`. This job
+is short structured extraction, not conversation, so a small fast model is
+the right pick and a large one mostly buys latency.
+
+I could not check Groq's live model list from where I built this, so
+**verify the ID against <https://console.groq.com/docs/models>** before you
+rely on it. If the model name is wrong the Worker returns an empty intent
+list with an `error` field, the game falls back to its grammar, and nothing
+breaks — but you will not get any AI parsing until it is fixed. Turn on
+`AI_PARSER.debug` and watch for a `groq 404`.
+
+---
+
+## Cost and abuse
+
+Any public endpoint in front of a paid API can be called by anyone who finds
+the URL. The `ALLOWED_ORIGINS` check stops casual misuse from a browser, but
+it reads the `Origin` header, which a script can set to anything. Treat it as
+tidiness, not security.
+
+If that matters to you, add the daily cap:
+
+```sh
+npx wrangler kv namespace create ATC_KV
+```
+
+Uncomment the `[[kv_namespaces]]` block in `wrangler.toml`, paste in the id
+it printed, set `DAILY_CAP` to a number you are comfortable with, and
+redeploy. Past that many calls in a day the Worker returns an empty list and
+the game quietly falls back to its grammar. Cloudflare's dashboard can also
+rate limit per IP if you want a second layer.
+
+Calls only happen on transmissions the grammar could not handle, so normal
+play generates far fewer than you would expect.
+
+---
+
+## The contract
+
+**Request**
+
+```json
+{
+  "transcript": "slow the heavy on final and give him a three sixty",
+  "addressee": "DAL484",
+  "handled": ["dct"],
+  "context": {
+    "facility": "KATL", "position": "APP", "zulu": "0315",
+    "arrRwy": "27R", "depRwy": "26L",
+    "atis": { "letter": "Bravo", "windDir": 240, "windSpd": 14, "altimeter": "2990" },
+    "aircraft": [
+      { "callsign": "DAL484", "type": "B739", "heavy": false, "role": "arr",
+        "state": "appCtl", "altitude": 4000, "speed": 210, "heading": 270,
+        "runway": "27R", "milesOut": 8.2, "gate": null,
+        "destination": null, "origin": "KDFW", "selected": true }
+    ]
+  }
+}
+```
+
+`addressee` is who the game already decided you were talking to, or null.
+`handled` lists actions already applied, so the model returns only what is
+outstanding.
+
+**Response**
+
+```json
+{ "intents": [ { "callsign": "UAL22", "action": "spd", "value": "180" } ] }
+```
+
+Always HTTP 200 with a valid shape, even on failure — an empty `intents`
+array is how the endpoint says "no idea", and the game handles that cleanly.
+
+**Actions**
+
+```
+hdg alt spd seq dct ils taxi cto ctl luaw expect push hold cont
+abort ga stby rgr ho exit rbok rbbad monitor dvs rns none
+```
+
+Anything else is still accepted: the pilot acknowledges it and the comms log
+records that nothing on the scope changed. That is deliberate, so a plausible
+reply never hides the fact that no state moved.
+
+`worker/parse.js` keeps the action list in `ACTIONS` and the instructions in
+`SYSTEM_PROMPT`. If you add an op to `AI_ACTIONS` in `engine.js`, add it in
+both places here too.

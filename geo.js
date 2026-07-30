@@ -52,6 +52,7 @@ function realizeFacility(fac) {
   if (!A || !A.rwy || !A.rwy.length) { fac.real = false; return; }
   fac.real = true;
   fac.apName = A.name || fac.apName;
+  fac.lat = A.lat; fac.lon = A.lon;   // used to turn UTC into local field time
 
   fac.runways = A.rwy.map(r => ({
     id: r.a, recip: r.b,
@@ -383,22 +384,46 @@ function pointInPoly(flat, p) {
 }
 
 /* ---------- gate stands spread across the real ramp ---------- */
+/* Is this point on a runway? Measured against the runway surface itself plus
+   a wingspan of margin. Testing a wider radius than that rejects legitimate
+   ramp and taxiway spots, because runway-to-taxiway separation at a real
+   field is only 400-500 ft to begin with. */
+function onRunwaySurface(fac, q) {
+  for (const r of (fac.runways || [])) {
+    const dx = r.end.x - r.thr.x, dy = r.end.y - r.thr.y;
+    const l2 = dx * dx + dy * dy;
+    if (l2 === 0) continue;
+    let t = ((q.x - r.thr.x) * dx + (q.y - r.thr.y) * dy) / l2;
+    t = Math.max(0, Math.min(1, t));
+    const px = r.thr.x + t * dx, py = r.thr.y + t * dy;
+    if (Math.hypot(q.x - px, q.y - py) < Math.max(r.w, 0.02) / 2 + 0.012) return true;
+  }
+  return false;
+}
+
 function gateSpots(fac, want) {
   if (fac.gateSpots && fac.gateSpots.length >= want) return fac.gateSpots;
   const spots = [];
   const src = (fac.pav && fac.pav.apr && fac.pav.apr.length) ? fac.pav.apr
             : (fac.pav && fac.pav.twy ? fac.pav.twy.filter(p => polyArea(p) > 0.004) : []);
-  /* sample points inside the ramp polygons, biggest first */
-  const ranked = src.map(p => ({ p, a: polyArea(p) })).sort((x, y) => y.a - x.a).slice(0, 6);
+  /* Sample inside the ramp polygons, biggest first, but take a share from
+     each rather than filling the whole quota out of the largest one. That is
+     what spreads traffic along the concourses instead of heaping it all on
+     one apron. */
+  const ranked = src.map(p => ({ p, a: polyArea(p) })).sort((x, y) => y.a - x.a).slice(0, 8);
+  const target = want * 3;
+  const perPoly = ranked.length ? Math.ceil(target / ranked.length) : target;
   for (const { p } of ranked) {
     const [x0, y0, x1, y1] = polyBounds(p);
-    for (let tries = 0; tries < 400 && spots.length < want * 3; tries++) {
+    let got = 0;
+    for (let tries = 0; tries < 600 && got < perPoly && spots.length < target; tries++) {
       const q = { x: x0 + Math.random() * (x1 - x0), y: y0 + Math.random() * (y1 - y0) };
       if (!pointInPoly(p, q)) continue;
       if (spots.some(s => Math.hypot(s.x - q.x, s.y - q.y) < 0.02)) continue;
-      spots.push(q);
+      if (onRunwaySurface(fac, q)) continue;      // never park on the pavement
+      spots.push(q); got++;
     }
-    if (spots.length >= want * 3) break;
+    if (spots.length >= target) break;
   }
   if (!spots.length) {
     const a = fac.gates.anchor;

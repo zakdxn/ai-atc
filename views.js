@@ -61,16 +61,16 @@ function jit(seed) {
   return x - Math.floor(x);
 }
 
-function clockHM() {
-  const s = Math.floor(G.t);
-  return String(Math.floor(s / 3600) % 24).padStart(2, "0") + String(Math.floor(s / 60) % 60).padStart(2, "0");
-}
+/* real UTC, anchored at connect (see zulu() in engine.js) */
+function clockHM() { return zulu(); }
+function clockSS() { return zuluSS(); }
 function metarLine() {
   const a = G.atis, F = G.fac;
   const skyCode = { "sky clear": "SKC", "few clouds at two five zero zero": "FEW025",
-    "scattered four thousand": "SCT040", "broken eight thousand": "BKN080" }[a.sky] || "SKC";
+    "scattered four thousand": "SCT040", "broken eight thousand": "BKN080",
+    "overcast six hundred": "OVC006" }[a.sky] || "SKC";
   const visCode = (a.visSM || 10) + "SM";
-  return `${F.icao} ${String(15).padStart(2, "0")}${clockHM()}Z ${String(a.windDir).padStart(3, "0")}${String(a.windSpd).padStart(2, "0")}KT ${visCode} ${skyCode} ${a.temp}/${a.dew} A${a.qnh}`;
+  return `${F.icao} ${metarStamp()} ${String(a.windDir).padStart(3, "0")}${String(a.windSpd).padStart(2, "0")}KT ${visCode} ${skyCode} ${a.temp}/${a.dew} A${a.qnh}`;
 }
 
 /* ================= STARS ================= */
@@ -211,7 +211,7 @@ function drawSTARS() {
 
   /* system data area, top left */
   ctx.fillStyle = LST_GRN;
-  ctx.fillText(`${clockHM()}/${String(Math.floor(G.t) % 60).padStart(2, "0")} ${(+G.atis.qnh / 100).toFixed(2)}`, 14, 22);
+  ctx.fillText(`${clockHM()}/${clockSS()} ${(+G.atis.qnh / 100).toFixed(2)}`, 14, 22);
   ctx.fillText(`${V.range}NM PTL: 1.0`, 14, 36);
   ctx.fillText(`${G.fac.icao.replace(/^[KP]/, "")} ${(+G.atis.qnh / 100).toFixed(2)}`, 14, 50);
   /* flight plan list, top right */
@@ -279,9 +279,23 @@ function drawASDX() {
       ctx.strokeRect(x - 9, y - 9, 18, 18);
     }
     if (!DCB.dbOn || ac.dbHidden) continue;
+    /* Parked traffic on somebody else's frequency gets no tag at all: real
+       ASDE-X does not tag untracked aircraft, and a full block on every
+       aircraft at every gate buries the terminal under overlapping text.
+       The icon stays drawn and stays clickable, and anything you own or
+       have selected keeps its block. */
+    const mine = ac.owner === G.playerPos;
+    if (parked && !mine && G.selected !== ac && !alerted) continue;
     /* when an alert is up, unaffected traffic drops to a partial block */
     const anyAlert = DCB.alerts.length > 0;
-    const trait = anyAlert && !alerted ? "partial" : dbTraitFor(ac);
+    let trait = anyAlert && !alerted ? "partial" : dbTraitFor(ac);
+    /* your own parked traffic: callsign and gate, but not stacked two deep
+       against every neighbour, so give the crowded ones a partial block */
+    if (parked && G.selected !== ac && !alerted) {
+      const crowded = G.aircraft.some(o => o !== ac && !o.remove &&
+        ["gate", "clxOk", "gndCall", "gateIn"].includes(o.state) && dist2(ac, o) < 0.05);
+      if (crowded) trait = "partial";
+    }
     ctx.font = mono(DCB.charSize);
     ctx.fillStyle = G.selected === ac ? "#ffd75e" : alerted ? "#ff6060"
                   : parked ? "#1f9a4a" : ASDX_GRN;
@@ -310,7 +324,7 @@ function drawASDX() {
   ctx.fillStyle = ASDX_GRN;
   const sy = DCB.barTop ? 62 : 22;
   ctx.fillText(`RWY CFG: ${G.arrRwy.id}/${G.depRwy.id}${DCB.closedRwys.size ? "  CLSD: " + [...DCB.closedRwys].join(",") : ""}`, 14, sy);
-  ctx.fillText(`${clockHM()}/${String(Math.floor(G.t) % 60).padStart(2, "0")}  ${String(G.atis.windDir).padStart(3, "0")}${String(G.atis.windSpd).padStart(2, "0")}KT  A${G.atis.qnh}`, 14, sy + 14);
+  ctx.fillText(`${clockHM()}Z/${clockSS()}  ${String(G.atis.windDir).padStart(3, "0")}${String(G.atis.windSpd).padStart(2, "0")}KT  A${G.atis.qnh}`, 14, sy + 14);
   ctx.font = mono(11);
 }
 
@@ -453,7 +467,7 @@ function drawRunways(W2S, scale, TH) {
         ctx.translate(tx, ty);
         ctx.rotate(Math.atan2(ux * dir, -uy * dir));
         ctx.fillStyle = TH.rwyMark || "#f2f4f6";
-        ctx.font = "bold " + mono(Math.min(26, hwPx * 1.25)).slice(0);
+        ctx.font = "bold " + mono(Math.min(26, hwPx * 1.25));
         ctx.textAlign = "center";
         ctx.fillText(id, 0, hwPx * 0.42);
         ctx.textAlign = "start";
@@ -527,7 +541,7 @@ function drawPlaneIcon(x, y, hdg, color, sel) {
 function drawCAB() {
   const scale = curScale();
   const W2S = p => [V.cx + (p.x - V.cabPan.x) * scale, V.cy - (p.y - V.cabPan.y) * scale];
-  const night = G.atis.tod === "night";
+  const night = (typeof fieldTod === "function" ? fieldTod(G.fac) : G.atis.tod) === "night";
 
   /* terrain */
   ctx.fillStyle = night ? "#232b1e" : "#6a7d4f";
@@ -599,15 +613,17 @@ function drawCAB() {
   ctx.fillRect(0, 0, V.w, 24);
   ctx.fillStyle = "#28d028";
   ctx.font = mono(12);
-  ctx.fillText(`${clockHM()}/${String(G.atis.windSpd).padStart(2, "0")}`, 10, 16);
-  ctx.fillText(metarLine(), 90, 16);
+  /* the METAR already carries the time group and the wind, so it owns the bar */
+  ctx.fillText(metarLine(), 10, 16);
   ctx.font = mono(11);
 }
 
 function stateLabel(ac) {
+  /* the runway this aircraft is actually using, not whatever the ATIS says */
+  const dR = ((ac.rwy || G.depRwy) || {}).id || "";
   return {
     gate: "GATE", gndCall: "GATE", clxOk: "GATE", push: "PUSH", taxiWait: "RDY TAXI",
-    taxi: "TAXI " + G.depRwy.id, holdShortG: "HS " + G.depRwy.id, holdShort: "HS " + G.depRwy.id,
+    taxi: "TAXI " + dR, holdShortG: "HS " + dR, holdShort: "HS " + dR,
     lineup: "LUAW", rolling: "ROLL", climb: "DEP", depCtl: "DEP", ctrDep: "ENR",
     ctrArr: "ARR", appCtl: ac.app === "established" ? "ILS" : ac.app === "cleared" ? "APP CLR" : "VECT",
     twrArr: "FINAL", landedRoll: "ROLLOUT", rwyExit: "EXIT", gndIn: "TAXI IN", taxiIn: "TAXI IN",

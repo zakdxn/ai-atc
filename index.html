@@ -161,13 +161,14 @@ footer .freq{color:var(--dim);white-space:nowrap;font-size:12px}
 <body>
 
 <header>
-  <span class="title">AI ATC</span><span class="fac" id="build" title="Build number. If this does not match what Claude reports, your browser is serving a cached copy: hard-refresh with Ctrl+Shift+R.">b14</span>
+  <span class="title">AI ATC</span><span class="fac" id="build" title="Build number. If this does not match what Claude reports, your browser is serving a cached copy: hard-refresh with Ctrl+Shift+R.">b18</span>
   <span class="fac" id="facinfo">offline</span>
   <span class="clock" id="clock">00:00:00</span>
   <div class="chips">
     <span class="chip good">SCORE <b id="scScore">0</b></span>
     <span class="chip">RATING <b id="scRating">S1</b></span>
     <span class="chip">PTS <b id="scPts">0</b></span>
+    <button id="btnTmu" title="Traffic management: active initiatives and wheels-up times">TMU</button>
     <button id="btnTdls" title="vTDLS: send a pre-departure clearance by datalink">TDLS</button>
     <button id="btnSop" title="Facility standard operating procedures for this session">SOP</button>
     <button id="btnAtis" title="Show and play the current ATIS">ATIS</button>
@@ -210,18 +211,19 @@ footer .freq{color:var(--dim);white-space:nowrap;font-size:12px}
 <div class="overlay open" id="menu"><div class="card" id="menucard"></div></div>
 <div class="overlay" id="help"><div class="card" id="helpcard"></div></div>
 <div class="overlay" id="sop"><div class="card" id="sopcard"></div></div>
+<div class="overlay" id="tmu"><div class="card" id="tmucard"></div></div>
 <div class="overlay" id="tdls"><div class="card" id="tdlscard"></div></div>
 <div class="overlay" id="debrief"><div class="card" id="debriefcard"></div></div>
 <div class="overlay" id="fp"><div class="card" id="fpcard"></div></div>
 
-<script src="airports.js?v=14"></script>
-<script src="data.js?v=14"></script>
-<script src="audio.js?v=14"></script>
-<script src="engine.js?v=14"></script>
-<script src="geo.js?v=14"></script>
-<script src="views.js?v=14"></script>
-<script src="dcb.js?v=14"></script>
-<script src="ops.js?v=14"></script>
-<script src="app.js?v=14"></script>
+<script src="airports.js?v=18"></script>
+<script src="data.js?v=18"></script>
+<script src="audio.js?v=18"></script>
+<script src="engine.js?v=18"></script>
+<script src="geo.js?v=18"></script>
+<script src="views.js?v=18"></script>
+<script src="dcb.js?v=18"></script>
+<script src="ops.js?v=18"></script>
+<script src="app.js?v=18"></script>
 </body>
 </html>

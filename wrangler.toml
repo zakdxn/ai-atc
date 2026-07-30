@@ -1,0 +1,23 @@
+name = "ai-atc-parse"
+main = "parse.js"
+compatibility_date = "2024-11-01"
+
+[vars]
+# Comma-separated list of origins allowed to call this. Add your Pages origin
+# and any custom domain. "*" allows anything, which is fine while testing and
+# a bad idea once it is public.
+ALLOWED_ORIGINS = "https://zakdxn.github.io,http://localhost:8000,http://127.0.0.1:8000"
+
+# Check Groq's current model list and set whichever you prefer. A small fast
+# model is the right choice here: this is extraction, not conversation.
+GROQ_MODEL = "llama-3.1-8b-instant"
+
+# Optional hard stop on calls per day. Needs the KV namespace below to be
+# uncommented and created, otherwise it is ignored.
+DAILY_CAP = "0"
+
+# Optional. Create with:  npx wrangler kv namespace create ATC_KV
+# then paste the id it prints and uncomment both lines.
+# [[kv_namespaces]]
+# binding = "ATC_KV"
+# id = "paste-the-id-here"
