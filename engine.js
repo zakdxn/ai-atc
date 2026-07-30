@@ -1924,18 +1924,6 @@ function verdictReadback(ac, ok) {
     }
   }
 }
-function finishClearance(ac, silent) {
-  ac.state = "clxOk"; ac.stateT = 0;
-  if (!silent) setTimeout(() => { if (!ac.remove) ac.say(`${ac.spoken()}, thanks, we'll call ground.`); }, 1200);
-  scheduleGndCall(ac);
-}
-
-function settleHandoff(ac, to) {
-  if (ac.hoTo && ac.hoAccepted) addPoints(4, `${ac.cs} handed off cleanly to ${to}`);
-  else if (ac.hoTo) addPoints(3, `${ac.cs} switched to ${to}, flash was still pending`);
-  else addPoints(2, `${ac.cs} shipped to ${to}`);
-  ac.hoTo = null; ac.hoAccepted = false;
-}
 
 function execOps(ac, ops) {
   const F = G.fac;
@@ -2026,7 +2014,6 @@ function execOps(ac, ops) {
             parts.push(`runway ${rwyWords(tRwy.id)} via ${G.fac.taxi[tRwy.id].names}, hold short`);
             startTaxi(ac);
           } else if (["taxi", "holdShort", "holdShortG", "aborted"].includes(ac.state)) {
-            // FIX: Added "aborted" so they can accept a new taxi path out of the runway
             ac.rwy = tRwy;
             const newTx = G.fac.taxi[tRwy.id];
             if (ac.taxiPath && ac.taxiPath[ac.taxiIdx]) {
@@ -2096,7 +2083,6 @@ function execOps(ac, ops) {
         } else unable.push("hold position");
         break;
       case "monitor":
-        
         ac.monitorOnly = true;
         ac.standbyAt = G.t; ac.standbyDur = 3600;
         ac.reminders = 2;
@@ -2104,7 +2090,7 @@ function execOps(ac, ops) {
         break;
       case "seq":
         ac.seqNum = op.n;
-        ac.standbyAt = G.t; ac.standbyDur = 60 + op.n * 45;   // they wait their turn quietly
+        ac.standbyAt = G.t; ac.standbyDur = 60 + op.n * 45;
         parts.push(`number ${numWords(op.n)}`);
         break;
       case "follow":
@@ -2198,7 +2184,6 @@ function execOps(ac, ops) {
           settleHandoff(ac, "GND");
           setOwner(ac, "GND", false);
         } else if (ac.role === "dep" && ["holdShort", "taxi", "holdShortG", "aborted"].includes(ac.state)) {
-          // FIX: Added "aborted" so they can be handed back to ground off the runway
           parts.push("ground, good day");
           ac.state = "returnGate"; ac.stateT = 0;
           settleHandoff(ac, "GND");
@@ -2239,9 +2224,8 @@ function execOps(ac, ops) {
       case "exit": parts.push("will do"); break;
       case "ho":
         initiateHandoff(ac);
-        return;                              // a coordination action, not a radio call
+        return;
       case "stby":
-        
         ac.standbyAt = G.t;
         ac.standbyDur = op.mins ? Math.min(op.mins, 60) * 60 : 240;
         ac.reminders = 0;
@@ -2249,7 +2233,6 @@ function execOps(ac, ops) {
         parts.push(op.mins ? `standing by ${numWords(String(op.mins))} minute${op.mins === 1 ? "" : "s"}` : "standing by");
         break;
       case "abort": {
-        
         if (ac.role !== "dep" || !["holdShort", "lineup", "rolling"].includes(ac.state)) {
           unable.push("that, we're not taking off"); break;
         }
@@ -2271,7 +2254,7 @@ function execOps(ac, ops) {
         break;
       }
       case "rgr":
-        if (ops.length === 1) return;          // a bare acknowledgment needs no readback
+        if (ops.length === 1) return;
         break;
       case "rbok": verdictReadback(ac, true); return;
       case "rbbad": verdictReadback(ac, false); return;
