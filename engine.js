@@ -2082,7 +2082,6 @@ function execOps(ac, ops) {
         } else unable.push("turn next");
         break;
       }
-      }
       case "expect": {
         const eRwy = resolveRwy(op.rwy);
         if (!eRwy) { unable.push(`runway ${op.rwy}`); break; }
