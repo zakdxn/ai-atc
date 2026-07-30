@@ -60,7 +60,7 @@ const G = {
   counters: { clx: 0, taxi: 0, tko: 0, ldg: 0, ils: 0, ho: 0, sep: 0, ga: 0 },
   arrSeq: [],
   arrSpacing: 6.5,       // Dynamic arrival spacing requested by TWR
-  ctrSpacing: 10,
+  ctrSpacing: 10,        // Dynamic enroute spacing requested by APP/TWR
   slowDel: 0, lastDelTime: 0, // Clearance Delivery flow controls
   nextArr: 20, nextDep: 6, nextEvent: 120,
   rushPhase: rnd(0, Math.PI * 2),
@@ -548,7 +548,7 @@ function runwayFreeForTakeoff(ac) {
     const oRwy = o.rwy || (o.role === "arr" ? G.arrRwy : G.depRwy);
     if (oRwy.id !== depRwy.id) continue;
     
-    if ((o.state === "rolling" || o.state === "lineup") && !o.remove) return false;
+    if ((o.state === "rolling" || o.state === "lineup" || o.state === "aborted") && !o.remove) return false;
     if (o.state === "climb" && o.alt < 400) return false;
     if (o.state === "landedRoll") return false;
     if (o.role === "arr" && (o.state === "appCtl" || o.state === "twrArr") &&
@@ -918,7 +918,7 @@ function stepAircraft(ac, dt) {
     execOps(ac, p.ops);
   }
   if (!ac.called && G.t >= ac.callAt &&
-      !["push", "taxi", "taxiIn", "lineup", "rolling", "landedRoll", "out", "gateIn", "clxOk", "taxiWait", "holdShortG", "rwyExit"].includes(ac.state)) {
+      !["push", "taxi", "taxiIn", "lineup", "rolling", "landedRoll", "out", "gateIn", "clxOk", "taxiWait", "holdShortG", "rwyExit", "aborted"].includes(ac.state)) {
     if (ac.monitorOnly) ac.callAt = G.t + 30;              // waiting for you to call
     else if (freqBusy(ac.owner)) ac.callAt = G.t + rnd(2, 5);
     else pilotCheckIn(ac);
@@ -948,7 +948,7 @@ function stepAircraft(ac, dt) {
 
   switch (ac.state) {
     case "gate": case "clxOk": case "gndCall": case "taxiWait":
-    case "holdShortG": case "holdShort": case "gndIn": case "gateIn": case "rwyExit":
+    case "holdShortG": case "holdShort": case "gndIn": case "gateIn": case "rwyExit": case "aborted":
       return;
     case "push": {
       ac.pushT -= dt;
@@ -1020,6 +1020,31 @@ function stepAircraft(ac, dt) {
     }
     case "lineup": return;
     case "rolling": {
+      if (ac.rto) {
+        ac.ias = Math.max(0, ac.ias - 16 * dt); // heavy braking
+        const d = ac.ias / 3600 * dt;
+        ac.x += Math.sin(d2r(ac.hdg)) * d;
+        ac.y += Math.cos(d2r(ac.hdg)) * d;
+        if (ac.ias <= 0) {
+          ac.state = "aborted";
+          ac.stateT = 0;
+          if (!ac.rtoReported) {
+             ac.rtoReported = true;
+             xmit(G.playerPos, "SYS", "warn", `${ac.cs} is disabled on the active runway!`, null);
+          }
+        }
+        return;
+      }
+      
+      // Random Rejected Takeoff Trigger
+      if (ac.ias < 100 && Math.random() < 0.0003 && !ac.emerg) {
+         ac.rto = true;
+         ac.emerg = { id: "rto", priority: true };
+         ac.say(`Tower, ${ac.spoken()} is rejecting the takeoff!`);
+         G.counters.ga++; 
+         return;
+      }
+
       ac.ias += 4.5 * dt;
       const d = ac.ias / 3600 * dt;
       ac.x += Math.sin(d2r(ac.hdg)) * d;
@@ -1151,7 +1176,7 @@ function flightStep(ac, dt) {
         const oRwy = o.rwy || (o.role === "arr" ? G.arrRwy : G.depRwy);
         if (oRwy.id !== R.id) continue;
         if (o.role === "arr" && o.state === "landedRoll") { doGoAround(ac, "traffic on the runway"); return; }
-        if (["lineup", "rolling"].includes(o.state)) { doGoAround(ac, "traffic on the runway"); return; }
+        if (["lineup", "rolling", "aborted"].includes(o.state)) { doGoAround(ac, "traffic on the runway"); return; }
       }
     }
     if (g.along <= 0.35 && ac.alt <= 160) { touchdown(ac); return; }
@@ -1280,7 +1305,7 @@ G.conflicts = new Set();
 G.proxPairs = new Set();
 function checkSeparation() {
   // EXPLICITLY filter out ANY aircraft on the ground to prevent phantom taxiway conflicts
-  const groundStates = ["gate", "push", "taxiWait", "taxi", "holdShortG", "holdShort", "lineup", "rolling", "landedRoll", "rwyExit", "gndIn", "taxiIn", "gateIn"];
+  const groundStates = ["gate", "push", "taxiWait", "taxi", "holdShortG", "holdShort", "lineup", "rolling", "landedRoll", "rwyExit", "gndIn", "taxiIn", "gateIn", "aborted"];
   const flying = G.aircraft.filter(a => !groundStates.includes(a.state) && a.alt > 100 && !a.remove);
   
   const newConf = new Set(), newProx = new Set();
@@ -1549,6 +1574,9 @@ const CMD_PATTERNS = [
   { t: "abort", re: /\b(?:abort|cancel|reject)\s+(?:the\s+)?take\s?off(?:\s+clearance)?\b|\btake\s?off\s+clearance\s+cancell?ed\b/, f: () => ({}) },
   { t: "stby",  re: /\bstand\s?by\b(?:\s+(?:for\s+)?(\d{1,2})\s*(?:minutes?|mins?)?)?|\bhold\s+on\b/, f: m => ({ mins: m[1] ? +m[1] : null }) },
   { t: "rgr",   re: /\brog(?:er)?\b|\bthanks?\b|\bgood\s+day\b|\bwilco\b/,           f: () => ({}) },
+  { t: "expedite", re: /\bexpedite(?:\s+rollout)?\b/,                                f: () => ({}) },
+  { t: "turn_next", re: /\bturn\s+next\s+taxiway\b/,                                 f: () => ({}) },
+  { t: "penalty", re: /\btaxi\s+to\s+(?:the\s+)?(?:holding\s+pad|penalty\s+box)\b/,   f: () => ({}) },
 ];
 
 function parseCommands(s) {
@@ -1730,6 +1758,9 @@ const AI_ACTIONS = {
   toDel:   () => ({ t: "toDel" }),
   dvs:     () => ({ t: "dvs" }),
   rns:     () => ({ t: "rns" }),
+  expedite: () => ({ t: "expedite" }),
+  turn_next: () => ({ t: "turn_next" }),
+  penalty: () => ({ t: "penalty" }),
 };
 
 function applyAiIntent(intent, addressee) {
@@ -2011,21 +2042,74 @@ function execOps(ac, ops) {
         break;
       }
       case "taxi": {
-        if (ac.role === "dep" && ["taxiWait", "push"].includes(ac.state)) {
-          if (ac.state === "push") { ac.pushT = 0; ac.state = "taxiWait"; }
+        if (ac.role === "dep") {
           const tRwy = op.rwy ? resolveRwy(op.rwy) : (ac.rwy || G.depRwy);
           if (!tRwy) { unable.push(`runway ${op.rwy}`); break; }
           if (typeof isRwyClosed === "function" && isRwyClosed(tRwy.id)) {
             unable.push(`taxi, runway ${rwyWords(tRwy.id)} is closed`); break;
           }
           if (!G.fac.taxi[tRwy.id]) { unable.push(`taxi route to runway ${rwyWords(tRwy.id)}`); break; }
-          ac.rwy = tRwy;
-          parts.push(`runway ${rwyWords(tRwy.id)} via ${G.fac.taxi[tRwy.id].names}, hold short`);
-          startTaxi(ac);
+          
+          if (["taxiWait", "push", "gate"].includes(ac.state)) {
+            if (ac.state === "push") { ac.pushT = 0; ac.state = "taxiWait"; }
+            ac.rwy = tRwy;
+            parts.push(`runway ${rwyWords(tRwy.id)} via ${G.fac.taxi[tRwy.id].names}, hold short`);
+            startTaxi(ac);
+          } else if (["taxi", "holdShort", "holdShortG"].includes(ac.state)) {
+            // Dynamic routing out of the queue
+            ac.rwy = tRwy;
+            const newTx = G.fac.taxi[tRwy.id];
+            if (ac.taxiPath && ac.taxiPath[ac.taxiIdx]) {
+               ac.taxiPath = [ac.taxiPath[ac.taxiIdx]].concat(newTx.path);
+            } else {
+               ac.taxiPath = newTx.path;
+            }
+            ac.taxiIdx = 0;
+            ac.state = "taxi";
+            ac.stateT = 0;
+            parts.push(`runway ${rwyWords(tRwy.id)} via ${newTx.names}, hold short`);
+          } else {
+            unable.push("taxi");
+          }
         } else if (ac.role === "arr" && ac.state === "gndIn") {
           parts.push(`taxi to the gate via ${G.fac.taxi["in_" + (ac.rwy || G.arrRwy).id].names}`);
           startTaxiIn(ac);
         } else unable.push("taxi");
+        break;
+      }
+      case "penalty": {
+        if (ac.role !== "dep" || !["holdShort", "holdShortG", "taxi"].includes(ac.state)) {
+            unable.push("taxi to the penalty box"); break;
+        }
+        parts.push("taxiing to the holding pad");
+        ac.state = "taxi";
+        ac.taxiPath = [{x: ac.x + 0.02, y: ac.y + 0.02}]; // Route to pad to avoid queue
+        ac.taxiIdx = 0;
+        ac.monitorOnly = true; 
+        break;
+      }
+      case "expedite": {
+        if (ac.state === "landedRoll") {
+            ac.ias = Math.max(ac.ias, 45); 
+            parts.push("expediting rollout");
+        } else if (["taxi", "taxiIn"].includes(ac.state)) {
+            ac.ias = 25;
+            parts.push("expediting taxi");
+        } else unable.push("expedite");
+        break;
+      }
+      case "turn_next": {
+        if (ac.state === "landedRoll") {
+            const R = ac.rwy || G.arrRwy;
+            const txIn = G.fac.taxi["in_" + R.id] || G.fac.taxi["in_" + G.arrRwy.id];
+            if (txIn) {
+                ac.x = txIn.exit.x; ac.y = txIn.exit.y; // force exit to nearest
+                ac.ias = 15;
+                ac.state = "rwyExit"; ac.stateT = 0;
+                ac.called = true;
+                parts.push("turning next taxiway");
+            } else unable.push("turn next");
+        } else unable.push("turn next");
         break;
       }
       case "expect": {
@@ -2303,6 +2387,9 @@ function playerGrammar(raw) {
          handled = true;
        } else if (/\b(?:resume|normal)\b/.test(msg) && targetPos === "DEL") {
          intercom(targetPos, "resume_del");
+         handled = true;
+       } else if (/\b(?:departure\s+gap|hole)\b/.test(msg)) {
+         intercom(targetPos, "dep_gap");
          handled = true;
        }
        if (handled) return;
@@ -2604,28 +2691,51 @@ function tmuTick() {
     TMU.edct.clear();
   }
 }
-function tmuRoll() {
-  const roll = Math.random();
-  if (roll < 0.34 && !TMU.groundStop) {
-    const dest = pick(DESTS.filter(d => d.icao !== G.fac.icao));
-    const mins = Math.floor(rnd(8, 22));
-    TMU.groundStop = { dest: dest.icao, until: G.t + mins * 60, reason: pick(
-      ["weather at the destination", "a runway closure at the destination",
-       "volume", "a ground stop from the command centre", "thunderstorms in the arrival corridor"]) };
-    tmuSay(`Traffic management advisory: ground stop for ${dest.icao} traffic, ${mins} minutes, due to ${TMU.groundStop.reason}. Hold all ${dest.icao} departures at the gate.`);
-  } else if (roll < 0.62 && !TMU.mit) {
+
+function evaluateTMU() {
+  const ctrLoad = G.aircraft.filter(a => a.owner === "CTR").length;
+  const surfaceLoad = G.aircraft.filter(a => a.role === "dep" && ["holdShort", "holdShortG", "taxi", "taxiWait"].includes(a.state)).length;
+  
+  if (ctrLoad <= 4 && surfaceLoad <= 4 && TMU.gdp) {
+    tmuSay("Traffic management: volume has decreased. Ground delay programme cancelled, normal releases.");
+    TMU.gdp = null;
+    TMU.edct.clear();
+    return;
+  }
+
+  // 0. Surface Gridlock (Reacting to local ground loads)
+  if (surfaceLoad >= 8 && !TMU.gdp) {
+    TMU.gdp = { until: G.t + 1800 };
+    for (const a of G.aircraft) if (a.role === "dep" && a.state !== "out") assignEDCT(a);
+    tmuSay(`Traffic management: surface gridlock detected. Ground delay programme in effect to hold traffic at the gates.`);
+    return;
+  }
+
+  // 1. Moderate Saturation: Issue Miles-in-Trail
+  if (ctrLoad >= 7 && !TMU.mit && Math.random() < 0.6) {
     const fx = pick(G.fac.fixes);
-    const miles = pick([10, 15, 20, 25]);
-    TMU.mit = { fix: fx.name, miles, until: G.t + rnd(600, 1500) };
-    tmuSay(`Traffic management: ${miles} miles in trail over ${fx.name}, effective now.`);
-  } else if (roll < 0.8 && !TMU.gdp) {
-    TMU.gdp = { until: G.t + rnd(900, 1800) };
-    /* everything already on the ground gets a slot */
+    const miles = pick([15, 20]);
+    TMU.mit = { fix: fx.name, miles, until: G.t + rnd(900, 1500) };
+    tmuSay(`Traffic management: due to volume, we need ${miles} miles in trail over ${fx.name}, effective immediately.`);
+  } 
+  
+  // 2. Heavy Saturation: Implement a Ground Delay Program
+  else if (ctrLoad >= 10 && !TMU.gdp && Math.random() < 0.7) {
+    const severityMins = (ctrLoad - 9) * 15; 
+    TMU.gdp = { until: G.t + severityMins * 60 };
     for (const a of G.aircraft) if (a.role === "dep" && a.state !== "out") assignEDCT(a);
     const n = TMU.edct.size;
-    tmuSay(`Traffic management: ground delay programme in effect for the next ${Math.round((TMU.gdp.until - G.t) / 60)} minutes. ${n} departure${n === 1 ? "" : "s"} ${n === 1 ? "has" : "have"} a wheels-up time. Check the TMU panel.`);
+    tmuSay(`Traffic management: Center is saturated. Ground delay programme in effect for the next ${severityMins} minutes. ${n} departure${n === 1 ? "" : "s"} assigned wheels-up times.`);
+  }
+
+  // 3. Critical Saturation: Full Ground Stop
+  else if (ctrLoad >= 14 && !TMU.groundStop) {
+    const dest = pick(DESTS.filter(d => d.icao !== G.fac.icao));
+    TMU.groundStop = { dest: dest.icao, until: G.t + 1800, reason: "critical sector volume" };
+    tmuSay(`Traffic management: Center holding all ${dest.icao} departures at the gate. Ground stop in effect due to critical sector volume.`);
   }
 }
+
 /* A wheels-up time, metered so the queue releases one at a time rather
    than the whole bank landing in the same window. */
 function assignEDCT(ac) {
@@ -2689,6 +2799,27 @@ function coordinationTick() {
       return;
     }
   }
+  
+  /* Approach dynamically escalates spacing requests to Center */
+  if (isAI("APP") && Math.random() < 0.4) {
+    const appLoad = G.aircraft.filter(a => a.owner === "APP" && a.role === "arr").length;
+    // If Approach has more than 5 arrivals and Center isn't already spacing them out
+    if (appLoad >= 5 && (G.ctrSpacing || 10) < 15) {
+      G.ctrSpacing = 15;
+      landlineChime();
+      xmit("INT", ctrlCallsign("CTR"), "ctrl", 
+        pick([
+          `Center, Approach. I'm running out of airspace, I need you to stretch the feed to 15 miles in trail.`,
+          `Center, Approach here. We're getting stacked up, give me 15 miles in trail on the arrivals.`
+        ]), G.ctrlVoice.APP);
+      
+      setTimeout(() => {
+        xmit("INT", ctrlCallsign("APP"), "ctrl", `Roger Approach, slowing them down. 15 miles in trail.`, G.ctrlVoice.CTR);
+      }, 3000);
+      return;
+    }
+  }
+
   /* centre passes an arrival count to approach */
   if (P === "APP" && Math.random() < 0.5) {
     const n = G.aircraft.filter(a => a.role === "arr" && a.owner === "CTR").length;
@@ -2764,6 +2895,7 @@ const LL_REQUESTS = {
   cross:       { label: "request runway crossing", to: () => "TWR" },
   space_arr:   { label: "request increased arrival spacing", to: () => "APP" },
   tighten_arr: { label: "request reduced arrival spacing", to: () => "APP" },
+  dep_gap:     { label: "request a departure gap", to: () => "APP" },
   pointout:    { label: "point out (selected)",   to: p => p },
   handoff:     { label: "coordinate handoff (selected)", to: p => p },
   traffic:     { label: "traffic call (selected)", to: p => p },
@@ -2794,6 +2926,7 @@ function intercom(pos, action) {
     space_arr: actParam ? `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, we need ${actParam} miles between arrivals.`
                         : `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, we need more room between arrivals.`,
     tighten_arr: `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, you can tighten up the final.`,
+    dep_gap: `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, we need a hole for departures.`,
     pointout: sel ? `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, point out, ${sel.cs}, ${Math.round(sel.distField())} miles, ${sel.alt > 100 ? Math.round(sel.alt / 100) * 100 + " feet" : "on the ground"}.`
                   : `${POS_NAME[pos]}, point out.`,
     handoff: sel ? `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, you got ${sel.cs}?`
@@ -2859,6 +2992,9 @@ function intercom(pos, action) {
       G.arrSpacing = Math.max((G.arrSpacing || 6.5) - 2.5, 4);
       reply = `Roger, tightening the final to ${G.arrSpacing} miles in trail.`;
     }
+  } else if (actKey === "dep_gap") {
+    G.arrSpacing = Math.max((G.arrSpacing || 6.5), 10);
+    reply = `Roger, building a hole. Stretching to ${G.arrSpacing} miles.`;
   } else if (actKey === "pointout") {
     if (sel) { sel.pointedOut = pos; addPoints(3, `point out on ${sel.cs} approved by ${pos}`); }
     reply = pick(["Point out approved, you keep him.", "Radar contact, approved, my traffic is no factor.",
@@ -3012,7 +3148,7 @@ function spawnArr() {
 }
 
 function randomEvent() {
-  if (Math.random() < 0.3) { tmuRoll(); return; }
+  if (Math.random() < 0.4) { evaluateTMU(); return; }
   const roll = Math.random();
   if (roll < 0.45) return;
   if (roll < 0.55) {
