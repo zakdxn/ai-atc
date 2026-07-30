@@ -818,19 +818,77 @@ function aiCTR(ac) {
   const F = G.fac;
   if (ac.role === "arr") {
     if (ac.state !== "ctrArr") return;
+    
     if (!ac.ctrInit) {
       ac.ctrInit = true;
       aiSay("CTR", `${ac.spoken()}, ${F.centerName}, descend via the ${ac.star}, altimeter ${numWords(G.atis.qnh)}.`);
       ac.say(`Descend via the ${ac.star}, ${numWords(G.atis.qnh)}, ${ac.spoken()}.`);
       ac.assignedAlt = ac.targetAlt = 11000;
       ac.aiAt = G.t + 10;
-    } else if (ac.distField() <= 38) {
-      aiSay("CTR", `${ac.spoken()}, contact ${F.tracon} ${freqWords(F.freqs.APP)}.`);
-      ac.say(`Over to approach, ${ac.spoken()}.`);
-      ac.state = "appCtl"; ac.stateT = 0;
-      setOwner(ac, "APP", false);
-    } else ac.aiAt = G.t + 6;
+    } else {
+      
+      // --- ENROUTE METERING & IN-TRAIL SPACING ---
+      let ahead = null;
+      let myDist = dist2(ac, ac.entryFix);
+      
+      for (const o of G.aircraft) {
+        if (o === ac || o.remove || o.role !== "arr" || !["ctrArr", "appCtl"].includes(o.state)) continue;
+        
+        // Find aircraft on the same STAR/entry fix converging ahead of us
+        if (o.entryFix && ac.entryFix && o.entryFix.name === ac.entryFix.name) {
+          const oDist = dist2(o, o.entryFix);
+          // If 'o' is closer to the fix than 'ac', it is ahead of us. 
+          // Check if it's within a 12-mile window.
+          if (oDist < myDist && (myDist - oDist) < 12) {
+            if (!ahead || oDist > dist2(ahead, ahead.entryFix)) {
+              ahead = o; // Lock onto the immediate aircraft in front of us
+            }
+          }
+        }
+      }
+
+      if (ahead) {
+        const d = dist2(ac, ahead);
+        const altDiff = Math.abs(ac.alt - ahead.alt);
+
+        // 1. Imminent Conflict (Under 5 miles): Stop Descent
+        if (d < 5.5 && altDiff < 1000) {
+          const safeAlt = Math.round((ahead.alt + 1000) / 100) * 100;
+          if (ac.targetAlt < safeAlt) {
+            ac.targetAlt = ac.assignedAlt = safeAlt;
+            aiSay("CTR", `${ac.spoken()}, traffic alert, stop descent at ${altWords(safeAlt)}.`);
+            ac.say(`Stop descent at ${altWords(safeAlt)}, ${ac.spoken()}.`);
+            ac.aiAt = G.t + 8;
+            return;
+          }
+        }
+        
+        // 2. Speed Control (Catching up within 9 miles)
+        if (d < 9 && ac.targetIas > ahead.ias - 10) {
+          let newSpd = Math.max(250, Math.floor((ahead.ias - 20) / 10) * 10);
+          if (ac.targetIas > newSpd) {
+            ac.targetIas = ac.assignedSpd = newSpd;
+            aiSay("CTR", `${ac.spoken()}, for spacing, reduce speed to ${numWords(newSpd)}.`);
+            ac.say(`Speed ${numWords(newSpd)}, ${ac.spoken()}.`);
+            ac.aiAt = G.t + 10;
+            return;
+          }
+        }
+      }
+      // -------------------------------------------
+
+      // Handoff to Approach once close enough to the boundary
+      if (ac.distField() <= 38) {
+        aiSay("CTR", `${ac.spoken()}, contact ${F.tracon} ${freqWords(F.freqs.APP)}.`);
+        ac.say(`Over to approach, ${ac.spoken()}.`);
+        ac.state = "appCtl"; ac.stateT = 0;
+        setOwner(ac, "APP", false);
+      } else {
+        ac.aiAt = G.t + 6;
+      }
+    }
   } else {
+    // Departure logic
     if (ac.state !== "ctrDep") return;
     if (!ac.ctrInit) {
       ac.ctrInit = true;
