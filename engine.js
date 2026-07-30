@@ -1260,6 +1260,8 @@ const PHRASE_FIX = [
   // Phraseology standardizers
   [/(?:nine|9|09)\s+(?:or|er|a|are)\b/g, "9"],
   [/\bare\s+heavy\b/g, "heavy"],
+  [/\bheavier\b/g, "heavy"],
+  [/#/g, "number "],
   [/\bline\s+of\s+bandwidth\b/g, "line up and wait"],
   [/\bclim(?:b|bing|bin|ate|it|bed)\s*(?:and|in|n|to)?\s*maintain(?:ed|ing)?\b/g, "climb and maintain"],
   [/\bclim(?:b|bing|bin|ate|it|bed)\s+(?:and\s+)?maintain\b/g, "climb and maintain"],
@@ -1361,7 +1363,7 @@ const CMD_PATTERNS = [
   { t: "rbok",  re: /\bread\s?back\s+(?:is\s+)?correct\b|\brbc\b|\bcorrect\s+read\s?back\b/, f: () => ({}) },
   { t: "push",  re: /\bpush(?:back)?\s+approved\b|\bpa\b/,                           f: () => ({}) },
   { t: "hold",  re: /\bhold\s+position\b|\bhp\b/,                                    f: () => ({}) },
-  { t: "seq",   re: /\b(?:you(?:'re|\s+are)?\s+)?number\s+(\d{1,2})\b|\b#\s*(\d{1,2})\b/, f: m => ({ n: +(m[1] || m[2]) }) },
+  { t: "seq",   re: /(?:\b(?:you(?:'re|\s+are)?\s+)?number\s+|#\s*)(\d{1,2})\b/,     f: m => ({ n: +m[1] }) },
   { t: "follow", re: /\bfollow\s+(?:the\s+)?([a-z0-9]+(?:\s+[a-z0-9]+){0,3}?)\s*(?:,|$|(?=\bthen\b)|(?=\band\b))/, f: m => ({ who: m[1].trim() }) },
   { t: "giveway", re: /\bgive\s+way\s+to\s+(?:the\s+)?([a-z0-9]+(?:\s+[a-z0-9]+){0,3}?)\s*(?:,|$|(?=\bthen\b)|(?=\band\b))/, f: m => ({ who: m[1].trim() }) },
   { t: "expect", re: /\bexpect\s+(?:runway\s+)?(\d{1,2}[lrc]?)\b/,                    f: m => ({ rwy: m[1].toUpperCase() }) },
@@ -1398,6 +1400,115 @@ function parseCommands(s) {
     for (let i = ops.length - 1; i >= 0; i--) if (ops[i].t === "taxi") ops.splice(i, 1);
   }
   return { ops, rest: work.trim() };
+}
+
+// ==========================================
+// 1. MAIN VOICE / INPUT ENTRY POINT
+// ==========================================
+async function handleControllerSpeech(transcriptText) {
+  console.log("Transmitted:", transcriptText);
+  
+  // Send it to your local Python Flask backend (running on port 5000)
+  await sendToAIBackend(transcriptText);
+}
+
+
+// ==========================================
+// 2. THE AI BRIDGE & BULLETPROOF FALLBACK
+// ==========================================
+async function sendToAIBackend(transcriptText) {
+  try {
+    let response = await fetch('http://localhost:5000/parse', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ transcript: transcriptText })
+    });
+
+    // If Flask returns a rate limit (429) or error, seamlessly fall back to local Regex
+    if (response.status === 429 || !response.ok) {
+      console.warn("AI Backend rate limit hit. Falling back to local Regex engine.");
+      return parseCommands(transcriptText); 
+    }
+
+    let data = await response.json();
+    
+    // Safety check if JSON structure is empty or errored
+    if (!data.intents || data.intents.length === 0) {
+      console.log("No recognized intent from AI, checking local fallback...");
+      return parseCommands(transcriptText);
+    }
+
+    console.log("AI Parsed Intents:", data.intents);
+    
+    // Loop through each intent the LLM found and execute your simulator logic
+    data.intents.forEach(intent => {
+      executeSimulatorCommand(intent.callsign, intent.action, intent.value);
+    });
+
+  } catch (error) {
+    // If Python server is closed or offline, fallback instantly so the game never breaks
+    console.error("Python backend offline. Routing to local Regex.", error);
+    return parseCommands(transcriptText);
+  }
+}
+
+
+// ==========================================
+// 3. COMMAND ROUTER (JSON -> SIMULATOR STATE)
+// ==========================================
+function executeSimulatorCommand(callsign, action, value) {
+  // Find your aircraft object by its ICAO callsign (e.g., "AAL101", "NKS304")
+  let aircraft = simulationState.aircrafts.find(a => a.callsign === callsign);
+  
+  if (!aircraft) {
+    console.warn(`Aircraft ${callsign} not found on frequency.`);
+    return;
+  }
+
+  // Route the action to your aircraft control methods
+  let match;
+  switch (action) {
+    case "hdg":
+      match = value.match(/\d+/);
+      if (match) aircraft.setHeading(parseInt(match[0]));
+      break;
+      
+    case "spd":
+      match = value.match(/\d+/);
+      if (match) aircraft.setSpeed(parseInt(match[0]));
+      break;
+      
+    case "alt":
+      match = value.match(/\d+/);
+      if (match) aircraft.setAltitude(parseInt(match[0]));
+      break;
+      
+    case "abort":
+      aircraft.abortTakeoff();
+      break;
+      
+    case "hold":
+      aircraft.holdPosition();
+      break;
+      
+    case "seq":
+      aircraft.setSequenceNumber(value);
+      break;
+      
+    case "taxi":
+      aircraft.setTaxiDestination(value);
+      break;
+      
+    case "none":
+      // Pilot is just checking in, no action required
+      console.log(`${callsign} checked in: ${value}`);
+      break;
+      
+    default:
+      console.log(`Unhandled action: ${action}`);
+  }
 }
 
 /* ---- IFR clearance grading (player on DEL) ---- */
