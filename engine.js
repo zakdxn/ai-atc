@@ -539,10 +539,10 @@ function startPush(ac) { ac.state = "push"; ac.stateT = 0; ac.pushT = rnd(20, 30
 
 function startTaxi(ac) {
   const tx = G.fac.taxi[(ac.rwy || G.depRwy).id];
-  if (!tx) return; // safety check
+  if (!tx) return;
   ac.state = "taxi"; ac.stateT = 0;
   ac.taxiPath = tx.path; ac.taxiIdx = 0; ac.ias = 16;
-  /* skip any leading waypoints already behind the stand with an infinite loop safeguard */
+  
   let safetyCount = 0;
   while (ac.taxiIdx < ac.taxiPath.length - 1 &&
          dist2(ac, ac.taxiPath[ac.taxiIdx]) > dist2(ac, ac.taxiPath[ac.taxiIdx + 1]) &&
@@ -550,13 +550,17 @@ function startTaxi(ac) {
     ac.taxiIdx++;
     safetyCount++;
   }
-  if (G.playerPos === "GND") { addPoints(4, `${ac.cs} taxiing to ${(ac.rwy || G.depRwy).id}`); G.counters.taxi++; }
+  
+  if (G.playerPos === "GND") { 
+    addPoints(4, `${ac.cs} taxiing to ${(ac.rwy || G.depRwy).id}`); 
+    G.counters.taxi++; 
+  }
   G.hooks.strips();
 }
 
 function startTaxiIn(ac) {
   const txIn = G.fac.taxi["in_" + (ac.rwy || G.arrRwy).id];
-  if (!txIn) return; // safety check
+  if (!txIn) return;
   ac.state = "taxiIn"; ac.stateT = 0;
   ac.taxiPath = txIn.path.concat([{ x: G.fac.gates.anchor.x + rnd(-0.1, 0.1), y: G.fac.gates.anchor.y + rnd(-0.06, 0.06) }]);
   ac.taxiIdx = 0; ac.ias = 15;
