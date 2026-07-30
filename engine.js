@@ -2150,8 +2150,8 @@ function execOps(ac, ops) {
             ac.rwy = tRwy;
             parts.push(`runway ${rwyWords(tRwy.id)} via ${G.fac.taxi[tRwy.id].names}, hold short`);
             startTaxi(ac);
-          } else if (["taxi", "holdShort", "holdShortG"].includes(ac.state)) {
-            // Dynamic routing out of the queue
+          } else if (["taxi", "holdShort", "holdShortG", "aborted"].includes(ac.state)) {
+            // FIX: Added "aborted" so they can accept a new taxi path out of the runway
             ac.rwy = tRwy;
             const newTx = G.fac.taxi[tRwy.id];
             if (ac.taxiPath && ac.taxiPath[ac.taxiIdx]) {
@@ -2173,12 +2173,12 @@ function execOps(ac, ops) {
         break;
       }
       case "penalty": {
-        if (ac.role !== "dep" || !["holdShort", "holdShortG", "taxi"].includes(ac.state)) {
+        if (ac.role !== "dep" || !["holdShort", "holdShortG", "taxi", "aborted"].includes(ac.state)) {
             unable.push("taxi to the penalty box"); break;
         }
         parts.push("taxiing to the holding pad");
         ac.state = "taxi";
-        ac.taxiPath = [{x: ac.x + 0.02, y: ac.y + 0.02}]; // Route to pad to avoid queue
+        ac.taxiPath = [{x: ac.x + 0.02, y: ac.y + 0.02}]; 
         ac.taxiIdx = 0;
         ac.monitorOnly = true; 
         break;
@@ -2194,11 +2194,11 @@ function execOps(ac, ops) {
         break;
       }
       case "turn_next": {
-        if (ac.state === "landedRoll") {
-            const R = ac.rwy || G.arrRwy;
-            const txIn = G.fac.taxi["in_" + R.id] || G.fac.taxi["in_" + G.arrRwy.id];
+        if (ac.state === "landedRoll" || ac.state === "aborted") {
+            const R = ac.rwy || (ac.role === "arr" ? G.arrRwy : G.depRwy);
+            const txIn = G.fac.taxi["in_" + R.id] || (G.arrRwy && G.fac.taxi["in_" + G.arrRwy.id]);
             if (txIn) {
-                ac.x = txIn.exit.x; ac.y = txIn.exit.y; // force exit to nearest
+                ac.x = txIn.exit.x; ac.y = txIn.exit.y; 
                 ac.ias = 15;
                 ac.state = "rwyExit"; ac.stateT = 0;
                 ac.called = true;
@@ -2206,6 +2206,7 @@ function execOps(ac, ops) {
             } else unable.push("turn next");
         } else unable.push("turn next");
         break;
+      }
       }
       case "expect": {
         const eRwy = resolveRwy(op.rwy);
@@ -2322,8 +2323,8 @@ function execOps(ac, ops) {
           ac.state = "gndIn"; ac.stateT = 0;
           settleHandoff(ac, "GND");
           setOwner(ac, "GND", false);
-        } else if (ac.role === "dep" && ["holdShort", "taxi", "holdShortG"].includes(ac.state)) {
-          // NEW: Sending a delayed departure back to Ground
+        } else if (ac.role === "dep" && ["holdShort", "taxi", "holdShortG", "aborted"].includes(ac.state)) {
+          // FIX: Added "aborted" so they can be handed back to ground off the runway
           parts.push("ground, good day");
           ac.state = "returnGate"; ac.stateT = 0;
           settleHandoff(ac, "GND");
