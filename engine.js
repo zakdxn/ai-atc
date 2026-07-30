@@ -473,15 +473,6 @@ function aiGND(ac) {
       ]));
       ac.state = "holdShort";
       setOwner(ac, "TWR", false);
-    }
-    } else if (ac.state === "holdShortG") {
-      aiSay("GND", pick([
-        `${ac.spoken()}, monitor tower ${freqWords(F.freqs.TWR)}, ${BYE()}.`,
-        `${ac.spoken()}, over to tower ${freqWords(F.freqs.TWR)}, ${BYE()}.`,
-        `${ac.spoken()}, tower's ${freqWords(F.freqs.TWR)}, ${BYE()}.`,
-      ]));
-      ac.state = "holdShort";
-      setOwner(ac, "TWR", false);
       
     // --- NEW: GROUND HANDLES RETURN-TO-GATE FOR DELAYED DEPARTURES ---
     } else if (ac.state === "returnGate" && ac.called) {
@@ -497,6 +488,7 @@ function aiGND(ac) {
       ac.ias = 15;
       G.hooks.strips();
     }
+    // ------------------------------------------------------------------
 
   } else {
     if (ac.state === "gndIn" && ac.called) {
@@ -510,7 +502,6 @@ function aiGND(ac) {
     }
   }
 }
-
 function startPush(ac) { ac.state = "push"; ac.stateT = 0; ac.pushT = rnd(20, 30); G.hooks.strips(); }
 function startTaxi(ac) {
   const tx = G.fac.taxi[(ac.rwy || G.depRwy).id];
