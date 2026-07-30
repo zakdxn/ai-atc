@@ -541,12 +541,14 @@ function startTaxi(ac) {
   if (!tx) return; // safety check
   ac.state = "taxi"; ac.stateT = 0;
   ac.taxiPath = tx.path; ac.taxiIdx = 0; ac.ias = 16;
-  /* skip any leading waypoints already behind the stand */
+  /* skip any leading waypoints already behind the stand with an infinite loop safeguard */
+  let safetyCount = 0;
   while (ac.taxiIdx < ac.taxiPath.length - 1 &&
-         dist2(ac, ac.taxiPath[ac.taxiIdx]) > dist2(ac, ac.taxiPath[ac.taxiIdx + 1])) ac.taxiIdx++;
-  if (G.playerPos === "GND") { addPoints(4, `${ac.cs} taxiing to ${(ac.rwy || G.depRwy).id}`); G.counters.taxi++; }
-  G.hooks.strips();
-}
+            dist2(ac, ac.taxiPath[ac.taxiIdx]) > dist2(ac, ac.taxiPath[ac.taxiIdx + 1]) &&
+            safetyCount < 100) {
+        ac.taxiIdx++;
+        safetyCount++;
+      }
 function startTaxiIn(ac) {
   const txIn = G.fac.taxi["in_" + (ac.rwy || G.arrRwy).id];
   if (!txIn) return; // safety check
@@ -1513,6 +1515,19 @@ function fixSquawkSpeech(s) {
 }
 
 const PHRASE_FIX = [
+  // Universal Airline Callsign Normalizers
+  [/\bspirit\s+(?:wins?|wing|wind|wines?)\b/gi, "spirit wings"],
+  [/\bdelta\s+(?:airlines?|air|del)\b/gi, "delta"],
+  [/\bunited\s+(?:airlines?|air)\b/gi, "united"],
+  [/\bamerican\s+(?:airlines?|air)\b/gi, "american"],
+  [/\bsouthwest\s+(?:airlines?|air)\b/gi, "southwest"],
+  [/\bjet\s*blue\b/gi, "jetblue"],
+  [/\bfed\s*ex\b/gi, "fedex"],
+  [/\bsky\s*west\b/gi, "skywest"],
+  [/\bhorizon\s+(?:air)?\b/gi, "horizon"],
+  [/\bfrontier\s+(?:airlines?)?\b/gi, "frontier"],
+  [/\balaska\s+(?:airlines?)?\b/gi, "alaska"],  
+
   // Global STT catch-alls
   [/\bate\b/g, "eight"],
   [/\bwon\b/g, "one"],
