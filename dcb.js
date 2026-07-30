@@ -47,22 +47,27 @@ function isRwyClosed(id) {
   return false;
 }
 
+function acRwy(ac) {
+  return ac.rwy || (ac.role === "arr" ? G.arrRwy : G.depRwy);
+}
+
 function safetyLogicScan() {
   if (!G.running || !G.fac.runways) return;
-  const arr = G.arrRwy, dep = G.depRwy;
   
   for (const ac of G.aircraft) {
     if (DCB.inhibited.has(ac.id) || ac.remove) continue;
-    if (ac.role === "arr" && ac.app === "established" && isRwyClosed(arr.id)) {
-      const g = finalGeom(ac, arr);
+    const R = acRwy(ac);
+    if (!R) continue;
+    if (ac.role === "arr" && ac.app === "established" && isRwyClosed(R.id)) {
+      const g = finalGeom(ac, R);
       if (g.along < 5 && g.along > 0.4) {
-        sfAlert(`RWY ${arr.id} ${ac.cs} RUNWAY CLOSED GO AROUND`, ac.id,
-          `Warning. Runway ${rwyWords(arr.id)}. Go around.`);
+        sfAlert(`RWY ${R.id} ${ac.cs} RUNWAY CLOSED GO AROUND`, ac.id,
+          `Warning. Runway ${rwyWords(R.id)}. Go around.`);
         if (g.along < 2.5 && ac.app) doGoAround(ac, "the runway is closed");
       }
     }
-    if (ac.role === "dep" && ["lineup", "rolling"].includes(ac.state) && isRwyClosed(dep.id)) {
-      sfAlert(`RWY ${dep.id} ${ac.cs} RUNWAY CLOSED`, ac.id, `Warning. Runway ${rwyWords(dep.id)} is closed.`);
+    if (ac.role === "dep" && ["lineup", "rolling"].includes(ac.state) && isRwyClosed(R.id)) {
+      sfAlert(`RWY ${R.id} ${ac.cs} RUNWAY CLOSED`, ac.id, `Warning. Runway ${rwyWords(R.id)} is closed.`);
     }
   }
   
@@ -72,10 +77,14 @@ function safetyLogicScan() {
     for (const ac of G.aircraft) {
       if (ac.remove || DCB.inhibited.has(ac.id)) continue;
       if (ac.role !== "arr" || ac.app !== "established") continue;
-      const g = finalGeom(ac, arr);
-      if (g.along < 2.2 && (arr.id === dep.id || onRwy.some(o => o.state === "landedRoll"))) {
-        sfAlert(`RWY ${arr.id} ${ac.cs} RUNWAY OCCUPIED GO AROUND`, ac.id,
-          `Warning. Runway ${rwyWords(arr.id)}. Go around.`);
+      const R = acRwy(ac);
+      if (!R) continue;
+      const conflicting = onRwy.some(o => o !== ac && acRwy(o) && acRwy(o).id === R.id);
+      if (!conflicting) continue;
+      const g = finalGeom(ac, R);
+      if (g.along < 2.2) {
+        sfAlert(`RWY ${R.id} ${ac.cs} RUNWAY OCCUPIED GO AROUND`, ac.id,
+          `Warning. Runway ${rwyWords(R.id)}. Go around.`);
       }
     }
   }
@@ -189,7 +198,7 @@ function dcbAction(id) {
       const next = G.fac.configs[(i + 1) % G.fac.configs.length];
       G.cfg = next;
       G.arrRwy = resolveRwy(next.arr); G.depRwy = resolveRwy(next.dep);
-      if (typeof prepareRoutes === "function") prepareRoutes(G.fac, G.arrRwy.id, G.depRwy.id);
+      if (typeof prepareRoutes === "function") prepareRoutes(G.fac);
       xmit(G.playerPos, "SYS", "sys", `Runway configuration changed: landing ${G.arrRwy.id}, departing ${G.depRwy.id}.`, null);
       break;
     }
