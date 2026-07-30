@@ -511,11 +511,15 @@ function startTaxi(ac) {
   
   let safetyCount = 0;
   while (ac.taxiIdx < ac.taxiPath.length - 1 &&
-            dist2(ac, ac.taxiPath[ac.taxiIdx]) > dist2(ac, ac.taxiPath[ac.taxiIdx + 1]) &&
-            safetyCount < 100) {
-        ac.taxiIdx++;
-        safetyCount++;
-      }
+         dist2(ac, ac.taxiPath[ac.taxiIdx]) > dist2(ac, ac.taxiPath[ac.taxiIdx + 1]) &&
+         safetyCount < 100) {
+    ac.taxiIdx++;
+    safetyCount++;
+  }
+  if (G.playerPos === "GND") { addPoints(4, `${ac.cs} taxiing to ${(ac.rwy || G.depRwy).id}`); G.counters.taxi++; }
+  G.hooks.strips();
+}
+
 function startTaxiIn(ac) {
   const txIn = G.fac.taxi["in_" + (ac.rwy || G.arrRwy).id];
   if (!txIn) return; // safety check
