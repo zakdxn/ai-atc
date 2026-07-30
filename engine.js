@@ -1560,7 +1560,7 @@ const AI_PARSER = {
   timeoutMs: 2500,            // a frequency cannot wait longer than this
   debug: false,
 };
-/* convenience toggle from the console: aiParser(true, "http://localhost:5000/parse") */
+/* convenience toggle from the console: aiParser(true, https://zdaiatc.workers.dev.") */
 function aiParser(on, url) {
   AI_PARSER.enabled = !!on;
   if (url) AI_PARSER.url = url;
