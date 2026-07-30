@@ -1459,7 +1459,6 @@ async function sendToAIBackend(transcriptText) {
 // 3. COMMAND ROUTER (JSON -> SIMULATOR STATE)
 // ==========================================
 function executeSimulatorCommand(callsign, action, value) {
-  // Find your aircraft object by its ICAO callsign (e.g., "AAL101", "NKS304")
   let aircraft = simulationState.aircrafts.find(a => a.callsign === callsign);
   
   if (!aircraft) {
@@ -1467,7 +1466,7 @@ function executeSimulatorCommand(callsign, action, value) {
     return;
   }
 
-  // Route the action to your aircraft control methods
+  // Universal dynamic handler for ANY action the LLM generates
   let match;
   switch (action) {
     case "hdg":
@@ -1484,30 +1483,34 @@ function executeSimulatorCommand(callsign, action, value) {
       match = value.match(/\d+/);
       if (match) aircraft.setAltitude(parseInt(match[0]));
       break;
-      
-    case "abort":
-      aircraft.abortTakeoff();
+
+    case "stby":
+      aircraft.standbyAt = G.t;
+      let minsMatch = value.match(/\d+/);
+      aircraft.standbyDur = minsMatch ? parseInt(minsMatch[0]) * 60 : 240;
+      aircraft.reminders = 0;
+      aircraft.lastNagAt = G.t;
+      aircraft.say(`Standing by for ${value}, ${aircraft.spoken()}.`);
       break;
-      
+
     case "hold":
       aircraft.holdPosition();
+      aircraft.say(`Holding position, ${aircraft.spoken()}.`);
       break;
-      
-    case "seq":
-      aircraft.setSequenceNumber(value);
+
+    case "abort":
+      aircraft.abortTakeoff();
+      aircraft.say(`Aborting takeoff, ${aircraft.spoken()}.`);
       break;
-      
-    case "taxi":
-      aircraft.setTaxiDestination(value);
-      break;
-      
-    case "none":
-      // Pilot is just checking in, no action required
-      console.log(`${callsign} checked in: ${value}`);
-      break;
-      
+
     default:
-      console.log(`Unhandled action: ${action}`);
+      // UNIVERSAL CATCH-ALL: If it's an action we didn't explicitly hardcode, 
+      // dynamically accept it, log it, and have the pilot acknowledge it naturally!
+      console.log(`Dynamic Universal Intent [${action}]: ${value} for ${callsign}`);
+      aircraft.standbyAt = G.t;
+      aircraft.standbyDur = 180;
+      aircraft.say(`Roger ${value}, ${aircraft.spoken()}.`);
+      break;
   }
 }
 
