@@ -536,6 +536,7 @@ function aiGND(ac) {
   }
 }
 function startPush(ac) { ac.state = "push"; ac.stateT = 0; ac.pushT = rnd(20, 30); G.hooks.strips(); }
+
 function startTaxi(ac) {
   const tx = G.fac.taxi[(ac.rwy || G.depRwy).id];
   if (!tx) return; // safety check
