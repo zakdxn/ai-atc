@@ -295,7 +295,9 @@ class Aircraft {
       this.route = `${this.origin.icao.slice(1)} ${this.entryFix.name} ${this.star}`;
       this.state = "ctrArr"; this.owner = "CTR";
       this.callAt = G.t + rnd(3, 10);
+      
       this.medevac = Math.random() < 0.04;
+      this.priority = this.medevac; // Medevacs get automatic priority handling
     }
   }
 
@@ -505,6 +507,30 @@ function aiGND(ac) {
       ac.state = "holdShort";
       setOwner(ac, "TWR", false);
     }
+    } else if (ac.state === "holdShortG") {
+      aiSay("GND", pick([
+        `${ac.spoken()}, monitor tower ${freqWords(F.freqs.TWR)}, ${BYE()}.`,
+        `${ac.spoken()}, over to tower ${freqWords(F.freqs.TWR)}, ${BYE()}.`,
+        `${ac.spoken()}, tower's ${freqWords(F.freqs.TWR)}, ${BYE()}.`,
+      ]));
+      ac.state = "holdShort";
+      setOwner(ac, "TWR", false);
+      
+    // --- NEW: GROUND HANDLES RETURN-TO-GATE FOR DELAYED DEPARTURES ---
+    } else if (ac.state === "returnGate" && ac.called) {
+      aiSay("GND", pick([
+        `${ac.spoken()}, roger the delay, taxi back to gate ${ac.gate.toLowerCase()}.`,
+        `${ac.spoken()}, taxi back to the ramp, gate ${ac.gate.toLowerCase()}.`
+      ]));
+      ac.state = "taxiIn"; 
+      ac.stateT = 0;
+      // Route them directly to the ramp anchor (the penalty box logic ensures they won't hit head-on traffic)
+      ac.taxiPath = [{ x: G.fac.gates.anchor.x + rnd(-0.1, 0.1), y: G.fac.gates.anchor.y + rnd(-0.06, 0.06) }];
+      ac.taxiIdx = 0; 
+      ac.ias = 15;
+      G.hooks.strips();
+    }
+
   } else {
     if (ac.state === "gndIn" && ac.called) {
       const txIn = G.fac.taxi["in_" + (ac.rwy || G.arrRwy).id];
@@ -551,8 +577,11 @@ function runwayFreeForTakeoff(ac) {
     if ((o.state === "rolling" || o.state === "lineup" || o.state === "aborted") && !o.remove) return false;
     if (o.state === "climb" && o.alt < 400) return false;
     if (o.state === "landedRoll") return false;
+    
+    // Priority aircraft block the runway from much further out
+    const arrBuffer = o.priority ? 12 : 6;
     if (o.role === "arr" && (o.state === "appCtl" || o.state === "twrArr") &&
-        o.app === "established" && finalGeom(o, oRwy).along < 6) return false;
+        o.app === "established" && finalGeom(o, oRwy).along < arrBuffer) return false;
   }
   return true;
 }
@@ -671,7 +700,11 @@ function aiAPP(ac) {
   if (!ac.appPlan) {
     const straight = g.along > 14 && Math.abs(g.cross) < 11;
     ac.appPlan = { mode: straight ? "str" : "dw", side: g.cross >= 0 ? 1 : -1, stage: 0, ext: 0 };
-    G.arrSeq.push(ac.id);
+    if (ac.priority) {
+      G.arrSeq.unshift(ac.id); // Priority aircraft jump the queue
+    } else {
+      G.arrSeq.push(ac.id);
+    }
     aiSay("APP", `${ac.spoken()}, ${facSpoken(F)} approach, expect ILS runway ${rwyWords(arrId)}. Descend and maintain ${altWords(straight ? 4000 : 6000)}.`);
     ac.say(`Down to ${altWords(straight ? 4000 : 6000)}, expecting the ILS, ${ac.spoken()}.`);
     ac.assignedAlt = ac.targetAlt = straight ? 4000 : 6000;
@@ -686,21 +719,54 @@ function aiAPP(ac) {
   const gapOk = !ahead || (finalGeom(ahead, ac.rwy || G.arrRwy).along < g.along - reqGap) ||
                 ["twrArr", "landedRoll", "rwyExit", "gndIn", "taxiIn", "gateIn"].includes(ahead.state);
 
-  // --- ESCAPE VECTOR MANAGEMENT ---
-  if (ac.isBreakingOut) {
-    // We are currently flying the breakout vector. Check if we are safe yet.
-    if (!ahead || dist2(ac, ahead) >= 4.5 || g.along > 28) {
-      ac.isBreakingOut = false; // Separation achieved, drop back into standard vectoring
+  // --- ESCAPE VECTOR MANAGEMENT & STERILE AIRSPACE ---
+  let beingRunOver = false;
+  if (!ac.priority && !ac.isBreakingOut && g.along < 25) {
+    const threat = G.aircraft.find(o => o.priority && !o.remove && o.role === "arr" && (o.rwy||G.arrRwy).id === (ac.rwy||G.arrRwy).id);
+    if (threat) {
+       const threatG = finalGeom(threat, threat.rwy || G.arrRwy);
+       if (threatG.along > g.along && threatG.along - g.along < 12 && Math.abs(threat.alt - ac.alt) < 2500) {
+           beingRunOver = true;
+       }
+    }
+  }
+
+  if (ac.isBreakingOut || beingRunOver) {
+    if (!ac.isBreakingOut && beingRunOver) {
+       ac.isBreakingOut = true; 
+       P.mode = "dw"; 
+       P.side = g.cross >= 0 ? 1 : (Math.random() < 0.5 ? 1 : -1);
+       P.stage = 0;
+       P.ext = Math.min(P.ext + 8, 30);
+       
+       const cutAng = pick([60, 80, 100]); 
+       const hdgOut = norm360((ac.rwy || G.arrRwy).hdg + 180 + cutAng * P.side);
+       const escAlt = pick([3000, 4000, 5000]);
+       
+       aiSay("APP", `${ac.spoken()}, breakout for a priority aircraft behind you, turn ${P.side > 0 ? "right" : "left"} heading ${hdgWords(Math.round(hdgOut / 10) * 10)}, climb and maintain ${altWords(escAlt)}.`);
+       ac.say(`Heading ${hdgWords(Math.round(hdgOut / 10) * 10)}, up to ${altWords(escAlt)}, ${ac.spoken()}.`);
+       ac.targetHdg = Math.round(hdgOut / 10) * 10; 
+       ac.targetAlt = escAlt;
+       ac.assignedAlt = escAlt;
+       ac.directFix = null;
+       ac.app = null;
+       ac.aiAt = G.t + 10;
+       return;
     } else {
-      ac.aiAt = G.t + 5; 
-      return; // Still too close, continue holding escape heading
+      // We are currently flying the breakout vector. Check if we are safe yet.
+      if (!ahead || dist2(ac, ahead) >= 4.5 || g.along > 28) {
+        ac.isBreakingOut = false; // Separation achieved, drop back into standard vectoring
+      } else {
+        ac.aiAt = G.t + 5; 
+        return; // Still too close, continue holding escape heading
+      }
     }
   } else if (ahead && ac.app !== "established" && !["landedRoll", "rwyExit", "gndIn", "taxiIn", "gateIn"].includes(ahead.state)) {
     const d = dist2(ac, ahead);
     const altDiff = Math.abs(ac.alt - ahead.alt);
 
-    // 1. Hard Speed Braking
-    if (d < reqGap + 4 && altDiff < 2000) {
+    // 1. Hard Speed Braking (Skipped for Priority Aircraft)
+    if (d < reqGap + 4 && altDiff < 2000 && !ac.priority) {
       let newSpd = Math.max(160, Math.floor((ahead.ias - 10) / 10) * 10);
       if (ac.targetIas > newSpd) {
         ac.targetIas = newSpd;
@@ -711,7 +777,7 @@ function aiAPP(ac) {
     }
 
     // 2. The 3.8-Mile Breakout Vector
-    if (d < 3.8 && altDiff < 1000 && ac.alt > 1500 && g.along < 25) {
+    if (d < 3.8 && altDiff < 1000 && ac.alt > 1500 && g.along < 25 && !ac.priority) {
       ac.isBreakingOut = true; 
       P.mode = "dw"; 
       P.side = g.cross >= 0 ? 1 : (Math.random() < 0.5 ? 1 : -1);
@@ -737,10 +803,10 @@ function aiAPP(ac) {
   if (P.mode === "str") {
     if (P.stage === 0) {
       steerTo(ac, ptOnFinal(ac, 15 + P.ext, 0));
-      if (g.along < 19 && gapOk) {
+      if (g.along < 19 && (gapOk || ac.priority)) {
         clearIls(ac);
         P.stage = 1;
-      } else if (g.along < 19 && !gapOk) {
+      } else if (g.along < 19 && !gapOk && !ac.priority) {
         /* spin them out wide to build a gap */
         P.mode = "dw"; P.side = g.cross >= 0 ? 1 : (Math.random() < 0.5 ? 1 : -1); P.stage = 0;
         const hdgOut = norm360((ac.rwy || G.arrRwy).hdg + 180 + 60 * P.side);
@@ -761,7 +827,7 @@ function aiAPP(ac) {
         ac.targetIas = 210;
       }
     } else if (P.stage === 1) {                 // base when the gap exists
-      if (gapOk) {
+      if (gapOk || ac.priority) {
         P.stage = 2;
         steerTo(ac, ptOnFinal(ac, 15 + P.ext, 2 * P.side));
       } else {
@@ -817,13 +883,36 @@ function clearIls(ac) {
 
 function aiCTR(ac) {
   const F = G.fac;
+
+  // --- NEW: CENTER EMERGENCY & PRIORITY HANDLING ---
+  if (ac.emerg && ac.emerg.id !== "nordo" && !ac.emergHandledCtr) {
+    ac.emergHandledCtr = true;
+    if (ac.emerg.id === "pressure") {
+      ac.assignedAlt = ac.targetAlt = 10000;
+      aiSay("CTR", `${ac.spoken()}, ${F.centerName}, emergency descent approved, descend and maintain one zero thousand, altimeter ${numWords(G.atis.qnh)}.`);
+      ac.say(`Down to one zero thousand, ${ac.spoken()}.`);
+    } else {
+      aiSay("CTR", `${ac.spoken()}, ${F.centerName}, roger your emergency, proceed direct ${ac.entryFix ? ac.entryFix.name : ac.exitFix.name}, expect priority handling.`);
+      ac.say(`Direct ${ac.entryFix ? ac.entryFix.name : ac.exitFix.name}, ${ac.spoken()}.`);
+      ac.directFix = ac.entryFix ? ac.entryFix : ac.exitFix;
+    }
+    ac.aiAt = G.t + 8;
+    return;
+  }
+  // --------------------------------------
+
   if (ac.role === "arr") {
     if (ac.state !== "ctrArr") return;
     
     if (!ac.ctrInit) {
       ac.ctrInit = true;
-      aiSay("CTR", `${ac.spoken()}, ${F.centerName}, descend via the ${ac.star}, altimeter ${numWords(G.atis.qnh)}.`);
-      ac.say(`Descend via the ${ac.star}, ${numWords(G.atis.qnh)}, ${ac.spoken()}.`);
+      if (ac.medevac) {
+         aiSay("CTR", `${ac.spoken()}, ${F.centerName}, roger Medevac, priority handling approved, descend via the ${ac.star}, altimeter ${numWords(G.atis.qnh)}.`);
+         ac.say(`Priority handling, descend via the ${ac.star}, ${numWords(G.atis.qnh)}, ${ac.spoken()}.`);
+      } else {
+         aiSay("CTR", `${ac.spoken()}, ${F.centerName}, descend via the ${ac.star}, altimeter ${numWords(G.atis.qnh)}.`);
+         ac.say(`Descend via the ${ac.star}, ${numWords(G.atis.qnh)}, ${ac.spoken()}.`);
+      }
       ac.assignedAlt = ac.targetAlt = 11000;
       ac.aiAt = G.t + 10;
     } else {
@@ -847,7 +936,7 @@ function aiCTR(ac) {
         }
       }
 
-      if (ahead) {
+      if (ahead && !ac.priority) {
         const d = dist2(ac, ahead);
         const altDiff = Math.abs(ac.alt - ahead.alt);
 
@@ -1537,7 +1626,12 @@ function matchCallsign(s) {
 }
 
 const CMD_PATTERNS = [
-  /* first: phrases that contain words other patterns would otherwise claim */
+  /* first: specific physical movements and edge cases so generic commands don't steal them */
+  { t: "penalty", re: /\b(?:taxi|proceed|continue)\s+(?:to\s+)?(?:the\s+)?(?:holding\s+pad|penalty\s+box)\b/, f: () => ({}) },
+  { t: "turn_next", re: /\bturn\s+next\s+taxiway\b/,                                 f: () => ({}) },
+  { t: "expedite", re: /\bexpedite(?:\s+rollout)?\b/,                                f: () => ({}) },
+  
+  /* next: phrases that contain words other patterns would otherwise claim */
   { t: "monitor", re: /\b(?:monitor|remain\s+this\s+frequency|(?:i'?ll|we'?ll)\s+call\s+you|expect\s+taxi\s+in\s+sequence|stand\s?by\s+for\s+taxi)\b(?:\s+(?:ground|tower|approach|departure|center|centre))?(?:\s*,?\s*(?:i'?ll|we'?ll)\s+call\s+you(?:\s+for\s+taxi)?)?/, f: () => ({}) },
   { t: "hdg",   re: /\bturn\s+(left|right)\s+(?:heading\s+)?(\d{1,3})\b/,            f: m => ({ dir: m[1][0].toUpperCase(), deg: +m[2] }) },
   { t: "hdg",   re: /\b(?:t\s+)?(l|r)\s+(?:h\s+)?(\d{1,3})\b/,                       f: m => ({ dir: m[1].toUpperCase(), deg: +m[2] }) },
@@ -1575,8 +1669,6 @@ const CMD_PATTERNS = [
   { t: "stby",  re: /\bstand\s?by\b(?:\s+(?:for\s+)?(\d{1,2})\s*(?:minutes?|mins?)?)?|\bhold\s+on\b/, f: m => ({ mins: m[1] ? +m[1] : null }) },
   { t: "rgr",   re: /\brog(?:er)?\b|\bthanks?\b|\bgood\s+day\b|\bwilco\b/,           f: () => ({}) },
   { t: "expedite", re: /\bexpedite(?:\s+rollout)?\b/,                                f: () => ({}) },
-  { t: "turn_next", re: /\bturn\s+next\s+taxiway\b/,                                 f: () => ({}) },
-  { t: "penalty", re: /\btaxi\s+to\s+(?:the\s+)?(?:holding\s+pad|penalty\s+box)\b/,   f: () => ({}) },
 ];
 
 function parseCommands(s) {
@@ -1734,7 +1826,16 @@ const AI_ACTIONS = {
   seq:     n => n == null ? null : { t: "seq", n },
   dct:     (n, v) => { const f = (String(v).match(/[A-Za-z]{2,6}/) || [])[0]; return f ? { t: "dct", fix: f.toUpperCase() } : null; },
   ils:     (n, v) => ({ t: "ils", rwy: (String(v).match(/\d{1,2}[LRClrc]?/) || [""])[0].toUpperCase() }),
-  taxi:    (n, v) => ({ t: "taxi", rwy: (String(v).match(/\d{1,2}[LRClrc]?/) || [""])[0].toUpperCase() }),
+  taxi:    (n, v) => {
+    const str = String(v).toLowerCase();
+    if (str.includes("penalty") || str.includes("pad")) return { t: "penalty" };
+    return { t: "taxi", rwy: (str.match(/\d{1,2}[LRClrc]?/) || [""])[0].toUpperCase() };
+  },
+  proceed: (n, v) => {
+    const str = String(v).toLowerCase();
+    if (str.includes("penalty") || str.includes("pad")) return { t: "penalty" };
+    return null; 
+  },
   cto:     (n, v) => ({ t: "cto", rwy: (String(v).match(/\d{1,2}[LRClrc]?/) || [""])[0].toUpperCase() }),
   ctl:     (n, v) => ({ t: "ctl", rwy: (String(v).match(/\d{1,2}[LRClrc]?/) || [""])[0].toUpperCase() }),
   luaw:    (n, v) => ({ t: "luaw", rwy: (String(v).match(/\d{1,2}[LRClrc]?/) || [""])[0].toUpperCase() }),
@@ -2225,6 +2326,12 @@ function execOps(ac, ops) {
         if (ac.role === "arr" && ac.state === "rwyExit") {
           parts.push("ground, good day");
           ac.state = "gndIn"; ac.stateT = 0;
+          settleHandoff(ac, "GND");
+          setOwner(ac, "GND", false);
+        } else if (ac.role === "dep" && ["holdShort", "taxi", "holdShortG"].includes(ac.state)) {
+          // NEW: Sending a delayed departure back to Ground
+          parts.push("ground, good day");
+          ac.state = "returnGate"; ac.stateT = 0;
           settleHandoff(ac, "GND");
           setOwner(ac, "GND", false);
         } else unable.push("ground");
@@ -2902,6 +3009,7 @@ const LL_REQUESTS = {
   restrict:    { label: "request a restriction",  to: () => "APP" },
   slow_del:    { label: "request slower clearances", to: () => "DEL" },
   resume_del:  { label: "resume normal clearances", to: () => "DEL" },
+  return_gate: { label: "request return to gate (selected)", to: () => "GND" },
 };
 
 function intercom(pos, action) {
@@ -2936,6 +3044,8 @@ function intercom(pos, action) {
     restrict: `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, anything you need on my departures?`,
     slow_del: `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, we're stacking up out here. Can you slow down the clearances?`,
     resume_del: `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, we're looking good again, resume normal clearances.`,
+    return_gate: sel ? `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, ${sel.cs} has a long delay, I need to send them back to you.`
+                     : `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}, I have a departure with a long EDCT, need to send them back.`,
   }[actKey] || `${POS_NAME[pos]}, ${POS_NAME[G.playerPos]}.`;
   xmit("INT", me, "you", ask, null);
 
@@ -3017,6 +3127,9 @@ function intercom(pos, action) {
   } else if (actKey === "resume_del") {
     reply = "Wilco, resuming normal clearance delivery.";
     effect = "resume_del";
+  } else if (actKey === "return_gate") {
+    reply = sel ? `Roger, ship ${sel.cs} over to me and I'll route them back to the gate.` 
+                : `Roger, ship them over.`;
   } else reply = "Go ahead.";
 
   setTimeout(() => {
@@ -3144,6 +3257,32 @@ function spawnArr() {
   const ac = new Aircraft("arr");
   if (G.aircraft.some(o => o.cs === ac.cs)) return;
   G.aircraft.push(ac);
+  G.hooks.strips();
+}
+
+function declareEmergency(ac, forced) {
+  if (!ac || ac.emerg || ac.remove || ac.alt < 300) return;
+  const e = forced || pick(EMERGENCIES);
+  ac.emerg = e;
+  ac.noDeviate = true;
+  ac.sqk = e.sqk;
+  ac.priority = e.priority;
+  alertTone();
+  if (e.id === "nordo") {
+    ac.nordo = true;
+    xmit(G.playerPos, "SYS", "warn",
+      `${ac.cs} is squawking 7600. No radio. They will fly the lost communications procedure.`, null);
+  } else {
+    ac.say(e.call(ac));
+    xmit(G.playerPos, "SYS", "warn",
+      `EMERGENCY: ${ac.cs} squawking ${e.sqk}. They need ${e.need}.`, null);
+  }
+  /* an emergency jumps the arrival queue */
+  if (ac.role === "arr") {
+    const i = G.arrSeq.indexOf(ac.id);
+    if (i > -1) G.arrSeq.splice(i, 1);
+    G.arrSeq.unshift(ac.id);
+  }
   G.hooks.strips();
 }
 
