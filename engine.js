@@ -60,6 +60,7 @@ const G = {
   counters: { clx: 0, taxi: 0, tko: 0, ldg: 0, ils: 0, ho: 0, sep: 0, ga: 0 },
   arrSeq: [],
   arrSpacing: 6.5,       // Dynamic arrival spacing requested by TWR
+  ctrSpacing: 10,
   slowDel: 0, lastDelTime: 0, // Clearance Delivery flow controls
   nextArr: 20, nextDep: 6, nextEvent: 120,
   rushPhase: rnd(0, Math.PI * 2),
@@ -837,9 +838,8 @@ function aiCTR(ac) {
         // Find aircraft on the same STAR/entry fix converging ahead of us
         if (o.entryFix && ac.entryFix && o.entryFix.name === ac.entryFix.name) {
           const oDist = dist2(o, o.entryFix);
-          // If 'o' is closer to the fix than 'ac', it is ahead of us. 
-          // Check if it's within a 12-mile window.
-          if (oDist < myDist && (myDist - oDist) < 12) {
+          // Check if it's within a 20-mile search window ahead of us
+          if (oDist < myDist && (myDist - oDist) < 20) {
             if (!ahead || oDist > dist2(ahead, ahead.entryFix)) {
               ahead = o; // Lock onto the immediate aircraft in front of us
             }
@@ -851,7 +851,7 @@ function aiCTR(ac) {
         const d = dist2(ac, ahead);
         const altDiff = Math.abs(ac.alt - ahead.alt);
 
-        // 1. Imminent Conflict (Under 5 miles): Stop Descent
+        // 1. Imminent Conflict (Under 5.5 miles): Stop Descent
         if (d < 5.5 && altDiff < 1000) {
           const safeAlt = Math.round((ahead.alt + 1000) / 100) * 100;
           if (ac.targetAlt < safeAlt) {
@@ -863,8 +863,9 @@ function aiCTR(ac) {
           }
         }
         
-        // 2. Speed Control (Catching up within 9 miles)
-        if (d < 9 && ac.targetIas > ahead.ias - 10) {
+        // 2. Speed Control (Using the dynamic G.ctrSpacing)
+        const reqGap = G.ctrSpacing || 10;
+        if (d < reqGap && ac.targetIas > ahead.ias - 10) {
           let newSpd = Math.max(250, Math.floor((ahead.ias - 20) / 10) * 10);
           if (ac.targetIas > newSpd) {
             ac.targetIas = ac.assignedSpd = newSpd;
@@ -2835,15 +2836,29 @@ function intercom(pos, action) {
                   "Hold him, I've got one on a two mile final.", "Approved as requested."]);
     effect = /Hold/.test(reply) ? "hold" : "release";
   } else if (actKey === "space_arr") {
-    if (actParam) {
-      G.arrSpacing = Math.min(Math.max(+actParam, 4), 30);
+    if (pos === "CTR") {
+      if (actParam) {
+        G.ctrSpacing = Math.min(Math.max(+actParam, 5), 40);
+      } else {
+        G.ctrSpacing = Math.min((G.ctrSpacing || 10) + 5.0, 40);
+      }
+      reply = `Roger, we'll feed the arrival fixes at ${G.ctrSpacing} miles in trail.`;
     } else {
-      G.arrSpacing = Math.min((G.arrSpacing || 6.5) + 3.0, 30);
+      if (actParam) {
+        G.arrSpacing = Math.min(Math.max(+actParam, 4), 30);
+      } else {
+        G.arrSpacing = Math.min((G.arrSpacing || 6.5) + 3.0, 30);
+      }
+      reply = `Roger, stretching the final to ${G.arrSpacing} miles in trail.`;
     }
-    reply = `Roger, stretching the final to ${G.arrSpacing} miles in trail.`;
   } else if (actKey === "tighten_arr") {
-    G.arrSpacing = Math.max((G.arrSpacing || 6.5) - 2.5, 4);
-    reply = `Roger, tightening the final to ${G.arrSpacing} miles in trail.`;
+    if (pos === "CTR") {
+      G.ctrSpacing = Math.max((G.ctrSpacing || 10) - 2.5, 5);
+      reply = `Roger, tightening the enroute feed to ${G.ctrSpacing} miles in trail.`;
+    } else {
+      G.arrSpacing = Math.max((G.arrSpacing || 6.5) - 2.5, 4);
+      reply = `Roger, tightening the final to ${G.arrSpacing} miles in trail.`;
+    }
   } else if (actKey === "pointout") {
     if (sel) { sel.pointedOut = pos; addPoints(3, `point out on ${sel.cs} approved by ${pos}`); }
     reply = pick(["Point out approved, you keep him.", "Radar contact, approved, my traffic is no factor.",
