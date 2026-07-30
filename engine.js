@@ -560,13 +560,6 @@ function aiTWR(ac) {
 }
 
 function startRoll(ac) {
-  /* everyone still queued shuffles forward */
-  for (const o of G.aircraft) {
-    if (o !== ac && ["holdShortG", "holdShort"].includes(o.state)) {
-      const fwd = { x: Math.sin(d2r(o.hdg)), y: Math.cos(d2r(o.hdg)) };
-      o.x += fwd.x * 0.045; o.y += fwd.y * 0.045;
-    }
-  }
   const rwy = ac.rwy || G.depRwy;
   ac.state = "rolling"; ac.stateT = 0;
   ac.x = rwy.thr.x; ac.y = rwy.thr.y;
@@ -666,14 +659,17 @@ function aiAPP(ac) {
       P.mode = "dw"; 
       P.side = g.cross >= 0 ? 1 : (Math.random() < 0.5 ? 1 : -1);
       P.stage = 0;
-      P.ext = Math.min(P.ext + 5, 25); // Extend downwind, but cap at 25 to prevent flying out of the 62-mile bounds
+      P.ext = Math.min(P.ext + 5, 25);
       
-      const hdgOut = norm360((ac.rwy || G.arrRwy).hdg + 180 + 90 * P.side);
-      aiSay("APP", `${ac.spoken()}, traffic alert, turn ${P.side > 0 ? "right" : "left"} heading ${hdgWords(Math.round(hdgOut / 10) * 10)}, climb and maintain four thousand.`);
-      ac.say(`Heading ${hdgWords(Math.round(hdgOut / 10) * 10)}, up to four thousand, ${ac.spoken()}.`);
+      const cutAng = pick([60, 80, 100]); 
+      const hdgOut = norm360((ac.rwy || G.arrRwy).hdg + 180 + cutAng * P.side);
+      const escAlt = pick([3000, 4000, 5000]); // Stack them vertically
+      
+      aiSay("APP", `${ac.spoken()}, traffic alert, turn ${P.side > 0 ? "right" : "left"} heading ${hdgWords(Math.round(hdgOut / 10) * 10)}, climb and maintain ${altWords(escAlt)}.`);
+      ac.say(`Heading ${hdgWords(Math.round(hdgOut / 10) * 10)}, up to ${altWords(escAlt)}, ${ac.spoken()}.`);
       ac.targetHdg = Math.round(hdgOut / 10) * 10; 
-      ac.targetAlt = 4000;
-      ac.assignedAlt = 4000;
+      ac.targetAlt = escAlt;
+      ac.assignedAlt = escAlt;
       ac.directFix = null;
       ac.app = null;
       ac.aiAt = G.t + 10;
@@ -833,7 +829,7 @@ function stepAircraft(ac, dt) {
 
   switch (ac.state) {
     case "gate": case "clxOk": case "gndCall": case "taxiWait":
-    case "holdShortG": case "holdShort": case "gndIn": case "gateIn":
+    case "holdShortG": case "holdShort": case "gndIn": case "gateIn": case "rwyExit":
       return;
     case "push": {
       ac.pushT -= dt;
@@ -859,7 +855,7 @@ function stepAircraft(ac, dt) {
       /* simple in-trail spacing on the ground; only yield to planes AHEAD of us toward the waypoint */
       for (const o of G.aircraft) {
         if (o !== ac && ["taxi", "taxiIn", "holdShortG", "holdShort"].includes(o.state)) {
-          if (dist2(ac, o) < 0.035) { // within ~200 ft
+          if (dist2(ac, o) < 0.045) { // Increased distance to naturally queue along the line
             const oDistToWp = dist2(o, wp);
             // Only yield if the other aircraft is closer to our target waypoint than we are
             if (oDistToWp < myDistToWp && sameDirAhead(ac, o)) return;
@@ -874,7 +870,6 @@ function stepAircraft(ac, dt) {
         ac.taxiIdx++;
         if (ac.taxiIdx >= path.length) {
           if (ac.state === "taxi") {
-            queueAtHoldShort(ac);
             ac.state = "holdShortG"; ac.stateT = 0;
             if (isAI("GND")) { ac.called = true; ac.aiAt = G.t + rnd(3, 8); }
             else ac.say(`Ground, ${ac.spoken()}, holding short runway ${rwyWords((ac.rwy || G.depRwy).id)}.`);
@@ -909,16 +904,21 @@ function stepAircraft(ac, dt) {
       return;
     }
     case "landedRoll": {
-      ac.ias = Math.max(15, ac.ias - 9.5 * dt); // Brake extremely hard
-      const d = ac.ias / 3600 * dt;
-      ac.x += Math.sin(d2r(ac.hdg)) * d;
-      ac.y += Math.cos(d2r(ac.hdg)) * d;
       const R = ac.rwy || G.arrRwy;
       const txIn = G.fac.taxi["in_" + R.id] || G.fac.taxi["in_" + G.arrRwy.id];
       const rolled = -finalGeom(ac, R).along;
       const f = { x: Math.sin(d2r(R.hdg)), y: Math.cos(d2r(R.hdg)) };
       const exitAt = txIn ? (txIn.exit.x - R.thr.x) * f.x + (txIn.exit.y - R.thr.y) * f.y : 0;
-      if (ac.ias <= 55 && rolled >= exitAt - 0.05) { // Exit at 55 knots
+      
+      const distToExit = exitAt - rolled;
+      const minSpd = distToExit > 0.3 ? 60 : 35; // Keep speed up if the exit is still far away
+      
+      ac.ias = Math.max(minSpd, ac.ias - 16 * dt); // Brake aggressively
+      const d = ac.ias / 3600 * dt;
+      ac.x += Math.sin(d2r(ac.hdg)) * d;
+      ac.y += Math.cos(d2r(ac.hdg)) * d;
+      
+      if (ac.ias <= 65 && distToExit <= 0.08) { // Exit at high-speed
         if (txIn) { ac.x = txIn.exit.x; ac.y = txIn.exit.y; }
         ac.ias = 15;
         ac.state = "rwyExit"; ac.stateT = 0;
@@ -936,17 +936,6 @@ function stepAircraft(ac, dt) {
     default:
       flightStep(ac, dt);
   }
-}
-
-/* park an arriving-at-the-hold-short aircraft behind anyone already waiting */
-function queueAtHoldShort(ac) {
-  const waiting = G.aircraft.filter(o => o !== ac && !o.remove &&
-    ["holdShortG", "holdShort"].includes(o.state));
-  if (!waiting.length) return;
-  const back = { x: Math.sin(d2r(ac.hdg + 180)), y: Math.cos(d2r(ac.hdg + 180)) };
-  const step = 0.045 * waiting.length;
-  ac.x += back.x * step;
-  ac.y += back.y * step;
 }
 
 function sameDirAhead(ac, o) {
