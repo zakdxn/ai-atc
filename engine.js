@@ -314,6 +314,7 @@ class Aircraft {
 function setOwner(ac, pos, silent) {
   const from = ac.owner;
   ac.owner = pos;
+  ac.ownerAt = G.t;             // when this frequency actually got them
   ac.called = false;
   ac.callAt = G.t + rnd(4, 10);
   ac.aiAt = 0;
@@ -1030,16 +1031,27 @@ function stepAircraft(ac, dt) {
     else { ac.aiAt = 0; AI_FN[ac.owner](ac); }
   }
   /* pilot nag when the player sits on them: suppressed for the promised
-     standby window, and never more than one nag per 90 seconds */
-  if (ac.owner === G.playerPos && ac.called && ac.reminders < 2 &&
+     standby window, and never more than one nag per 90 seconds. Capped, but
+     high enough that a genuinely forgotten aircraft keeps calling back
+     instead of going quiet forever after two tries and drifting all the way
+     to the edge of the world with no further warning. */
+  if (ac.owner === G.playerPos && ac.called && ac.reminders < 6 &&
       (!ac.standbyAt || G.t - ac.standbyAt > (ac.standbyDur || 420)) &&
       (!ac.lastNagAt || G.t - ac.lastNagAt > 90)) {
     const stale = ["gate", "gndCall", "taxiWait", "holdShort", "gndIn"].includes(ac.state) && ac.stateT > 100 + ac.reminders * 80;
     const staleAir = (ac.state === "ctrArr" || ac.state === "appCtl") && !ac.app && ac.stateT > 150 + ac.reminders * 100;
-    if ((stale || staleAir) && !freqBusy(ac.owner)) {
+    /* flying along on a stale assignment with nothing further from you:
+       a departure climbing out, or anyone post-go-around, that's been on
+       the same heading for minutes with no new clearance. This is what was
+       silently flying itself out to the 150 nm wall before. */
+    const staleFlying = ["climb", "depCtl", "ctrDep"].includes(ac.state) && ac.stateT > 150 + ac.reminders * 100;
+    if ((stale || staleAir || staleFlying) && !freqBusy(ac.owner)) {
       ac.reminders++;
       ac.lastNagAt = G.t;
-      ac.say(pick([`${ac.spoken()}, did you copy?`, `${ac.spoken()}, still with you.`, `${ac.spoken()}, standing by.`]));
+      ac.say(staleFlying
+        ? pick([`${ac.spoken()}, request further clearance, we're getting away from the field.`,
+                `${ac.spoken()}, say intentions, still on the assigned heading.`])
+        : pick([`${ac.spoken()}, did you copy?`, `${ac.spoken()}, still with you.`, `${ac.spoken()}, standing by.`]));
     }
   }
 
@@ -1332,8 +1344,6 @@ function doGoAround(ac, why) {
   ac.assignedSpd = null; ac.targetIas = 190;
   G.counters.ga++;
   ac.say(`${ac.spoken()} is going around${why ? ", " + why : ""}.`);
-  
-  const wasTwr = ac.state === "twrArr";
 
   if (ac.state === "twrArr") {
     /* tower sends them back to approach */
@@ -1360,8 +1370,12 @@ function doGoAround(ac, why) {
     else if (ownerBefore !== G.playerPos) {
         unfair = true;
     }
-    // Specific waived conditions based on player position
-    else if (G.playerPos === "TWR" && wasTwr && why === "traffic on the runway") {
+    // Specific waived conditions based on player position. Runway occupancy
+    // is waived for Tower outright, not just when the state had already
+    // flipped to twrArr at the exact instant it triggered -- another aircraft
+    // (or another controller's aircraft) not clearing in time isn't something
+    // a snap go-around decision could have prevented either way.
+    else if (G.playerPos === "TWR" && why === "traffic on the runway") {
         unfair = true;
     }
 
@@ -1452,10 +1466,20 @@ function checkSeparation() {
           const mine = a.owner === G.playerPos || b.owner === G.playerPos;
           xmit(G.playerPos, "SYS", "warn", `LOSS OF SEPARATION: ${a.cs} / ${b.cs}, ${h.toFixed(1)} nm, ${Math.round(v)} ft.`, null);
           if (mine) {
-            let waive = false;
-            if (G.playerPos === "TWR" && a.role === "arr" && b.role === "arr") waive = true;
+            let waive = false, waiveWhy = "";
+            /* Grace window: a conflict that was already this close the moment
+               either aircraft landed on your frequency was baked in before
+               you had any chance to touch it -- likely a handoff that came
+               in too tight, not a mistake you made. */
+            const GRACE = 15;
+            if ((a.owner === G.playerPos && G.t - (a.ownerAt || 0) < GRACE) ||
+                (b.owner === G.playerPos && G.t - (b.ownerAt || 0) < GRACE)) {
+              waive = true; waiveWhy = "handed off already in conflict";
+            } else if (G.playerPos === "TWR" && a.role === "arr" && b.role === "arr") {
+              waive = true; waiveWhy = "arrival spacing is Approach's responsibility";
+            }
             if (waive) {
-              addPoints(0, `Penalty waived: arrival spacing is Approach's responsibility`);
+              addPoints(0, `Penalty waived: ${waiveWhy}`);
             } else {
               addPoints(-20, "separation loss on your frequency");
             }
