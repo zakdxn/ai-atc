@@ -378,6 +378,18 @@ function drawPavement(W2S, scale, TH) {
     };
     /* 1. aprons and stands */
     for (const p of G.fac.pav.apr) fill(p, TH.ramp);
+    /* A handful of real fields (KATL, KSLC, KMEM, PHNL as of this writing)
+       have no apron polygons in the extracted apt.dat data at all, even
+       though they otherwise render fine. Without this, gate-parked
+       aircraft there sit in open teal void with nothing marking a ramp —
+       "gates make no sense" in its most literal form. Give them the same
+       simple ramp block the fully-synthetic fields already get. */
+    if (!G.fac.pav.apr.length) {
+      const [gx, gy] = W2S(G.fac.gates.anchor);
+      const rw = Math.max(46, 0.55 * scale), rh = Math.max(26, 0.32 * scale);
+      ctx.fillStyle = TH.ramp;
+      ctx.fillRect(gx - rw / 2, gy - rh / 2, rw, rh);
+    }
     /* 2. taxiway surface as one continuous shape, no per-piece outlines */
     for (const p of G.fac.pav.twy) fill(p, TH.taxi);
     /* 3. painted taxiway centrelines along the routes actually in use */
