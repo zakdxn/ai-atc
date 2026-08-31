@@ -149,7 +149,7 @@ export default {
       aircraft,
     });
 
-    const model = (env && env.GROQ_MODEL) || "llama-3.1-8b-instant";
+    const model = (env && env.GROQ_MODEL) || "openai/gpt-oss-20b";
     let res;
     try {
       res = await fetch(GROQ_URL, {

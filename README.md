@@ -63,9 +63,10 @@ It is off until you point it at an endpoint:
 aiParser(true, "https://ai-atc-parse.YOUR-SUBDOMAIN.workers.dev")
 ```
 
-`worker/` holds a Cloudflare Worker that does this against Groq, and
-`worker/README.md` has the setup. The API key lives on the Worker, never in
-this repo: everything here is downloaded by the browser.
+`parse.js` (repo root) is a Cloudflare Worker that does this against Groq,
+deployed with the `wrangler.toml` alongside it; `WORKER.md` has the setup.
+The API key lives on the Worker, never in this repo: everything else here is
+downloaded by the browser.
 
 The grammar runs first, so a normal clearance never waits on the network, and
 if the endpoint is missing or slow the grammar takes the transmission anyway.
