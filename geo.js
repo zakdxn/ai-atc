@@ -38,6 +38,16 @@ function polyCentroid(flat) {
   return { x: cx / (3 * a), y: cy / (3 * a) };
 }
 
+function sanePolys(list) {
+  if (!list || !list.length) return [];
+  const areas = list.map(polyArea);
+  const sorted = [...areas].sort((a, b) => a - b);
+  const n = sorted.length;
+  const median = n % 2 ? sorted[(n - 1) / 2] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2;
+  const cap = Math.max(0.5, median * 20);
+  return list.filter((_, i) => areas[i] <= cap);
+}
+
 function realizeFacility(fac) {
   const A = (typeof APT !== "undefined") && APT[fac.icao];
   if (!A || !A.rwy || !A.rwy.length) { fac.real = false; return; }
@@ -50,7 +60,7 @@ function realizeFacility(fac) {
     thr: { x: r.ax, y: r.ay }, end: { x: r.bx, y: r.by },
     hdg: r.hdg, len: r.len, w: r.w || 0.025,
   }));
-  fac.pav = { twy: A.twy || [], apr: A.apr || [] };
+  fac.pav = { twy: sanePolys(A.twy), apr: sanePolys(A.apr) };
 
   const byLen = [...fac.runways].sort((a, b) => b.len - a.len);
   const primary = byLen[0];
