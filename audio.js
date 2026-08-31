@@ -44,6 +44,8 @@ const landlineChime = () => beep(620, 0.09, 2, 0.07, 0.05);
 const alertTone = () => beep(880, 0.14, 3);
 const chime = () => beep(1320, 0.05, 1);
 
+const NOVELTY_VOICE_RE = /\b(albert|bad\s*news|bahh|bells|boing|bubbles|cellos|deranged|good\s*news|hysterical|jester|organ|pipe\s*organ|superstar|trinoids|whisper|wobble|zarvox)\b/i;
+
 const TTS = {
   enabled: true,
   voices: [],
@@ -51,7 +53,12 @@ const TTS = {
   speaking: false,
   init() {
     if (!("speechSynthesis" in window)) { this.enabled = false; return; }
-    const load = () => { this.voices = speechSynthesis.getVoices().filter(v => v.lang.startsWith("en")); };
+    const load = () => {
+      const en = speechSynthesis.getVoices().filter(v => v.lang.startsWith("en"));
+      const clean = en.filter(v => !NOVELTY_VOICE_RE.test(v.name));
+      
+      this.voices = clean.length ? clean : en;
+    };
     load();
     speechSynthesis.onvoiceschanged = load;
   },

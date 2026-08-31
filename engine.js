@@ -480,11 +480,14 @@ function aiGND(ac) {
         `${ac.spoken()}, roger the delay, taxi back to gate ${ac.gate.toLowerCase()}.`,
         `${ac.spoken()}, taxi back to the ramp, gate ${ac.gate.toLowerCase()}.`
       ]));
-      ac.state = "taxiIn"; 
+      ac.state = "taxiIn";
       ac.stateT = 0;
-      // Route them directly to the ramp anchor (the penalty box logic ensures they won't hit head-on traffic)
-      ac.taxiPath = [{ x: G.fac.gates.anchor.x + rnd(-0.1, 0.1), y: G.fac.gates.anchor.y + rnd(-0.06, 0.06) }];
-      ac.taxiIdx = 0; 
+      
+      const traveled = (ac.taxiPath || []).slice(0, ac.taxiIdx + 1);
+      const backPath = traveled.slice(0, -1).reverse();
+      backPath.push({ x: G.fac.gates.anchor.x + rnd(-0.1, 0.1), y: G.fac.gates.anchor.y + rnd(-0.06, 0.06) });
+      ac.taxiPath = backPath;
+      ac.taxiIdx = 0;
       ac.ias = 15;
       G.hooks.strips();
     }
@@ -1953,6 +1956,8 @@ function verdictReadback(ac, ok) {
 function execOps(ac, ops) {
   const F = G.fac;
   const parts = [], unable = [];
+  
+  const replyChan = ac.owner;
   for (const op of ops) {
     switch (op.t) {
       case "hdg": {
@@ -2285,11 +2290,11 @@ function execOps(ac, ops) {
       case "rbbad": verdictReadback(ac, false); return;
     }
   }
-  if (!parts.length && !unable.length) { ac.say(`Say again for ${ac.spoken()}?`); return; }
+  if (!parts.length && !unable.length) { ac.say(`Say again for ${ac.spoken()}?`, replyChan); return; }
   let text = parts.join(", ");
   if (unable.length) text += (text ? ", and " : "") + "unable " + unable.join(", and ");
   text += `, ${ac.spoken()}.`;
-  ac.say(text.charAt(0).toUpperCase() + text.slice(1));
+  ac.say(text.charAt(0).toUpperCase() + text.slice(1), replyChan);
 }
 
 function playerTransmit(raw) {
