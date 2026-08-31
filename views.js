@@ -331,6 +331,13 @@ function drawPavement(W2S, scale, TH) {
     
     for (const p of G.fac.pav.apr) fill(p, TH.ramp);
     
+    if (!G.fac.pav.apr.length) {
+      const [gx, gy] = W2S(G.fac.gates.anchor);
+      const rw = Math.max(46, 0.55 * scale), rh = Math.max(26, 0.32 * scale);
+      ctx.fillStyle = TH.ramp;
+      ctx.fillRect(gx - rw / 2, gy - rh / 2, rw, rh);
+    }
+    
     for (const p of G.fac.pav.twy) fill(p, TH.taxi);
     
     if (TH.centreline) {
