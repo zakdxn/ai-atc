@@ -46,6 +46,30 @@ function polyCentroid(flat) {
   return { x: cx / (3 * a), y: cy / (3 * a) };
 }
 
+/* Almost every extracted field carries one or two pavement polygons that are
+   wildly, physically impossible sizes for a single taxiway or apron piece --
+   as large as 5-20 sq nm, i.e. bigger than the entire airport property (JFK
+   itself is only ~5,000 acres / 5.7 sq nm total). This is a mis-extraction
+   from apt.dat, not real pavement, and left in, it paints as one giant
+   undifferentiated grey blob over everything else -- which is most of why
+   the ground picture reads as a shapeless mess instead of the ribbon-like
+   network of real taxiways a real ASDE-X shows. Real taxiway/apron polygons
+   at a given field cluster tightly in size (a runway-length parallel
+   taxiway and a big ramp are the outer edge of normal); anything wildly
+   larger than the rest of that same field's polygons is the mis-extraction,
+   so drop it relative to that field's own median rather than a fixed
+   constant, which is what lets one rule work from a small GA field up to
+   the biggest hub. */
+function sanePolys(list) {
+  if (!list || !list.length) return [];
+  const areas = list.map(polyArea);
+  const sorted = [...areas].sort((a, b) => a - b);
+  const n = sorted.length;
+  const median = n % 2 ? sorted[(n - 1) / 2] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2;
+  const cap = Math.max(0.5, median * 20);
+  return list.filter((_, i) => areas[i] <= cap);
+}
+
 /* ---------- realize a facility from the real data ---------- */
 function realizeFacility(fac) {
   const A = (typeof APT !== "undefined") && APT[fac.icao];
@@ -59,7 +83,7 @@ function realizeFacility(fac) {
     thr: { x: r.ax, y: r.ay }, end: { x: r.bx, y: r.by },
     hdg: r.hdg, len: r.len, w: r.w || 0.025,
   }));
-  fac.pav = { twy: A.twy || [], apr: A.apr || [] };
+  fac.pav = { twy: sanePolys(A.twy), apr: sanePolys(A.apr) };
 
   /* runway configurations derived from the real layout */
   const byLen = [...fac.runways].sort((a, b) => b.len - a.len);
