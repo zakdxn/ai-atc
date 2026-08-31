@@ -27,13 +27,41 @@ falls back to its grammar. A dead endpoint never costs you a transmission.
 
 ## Setup
 
-You need a free Cloudflare account and a Groq API key.
+You need a free Cloudflare account and a Groq API key. There are two ways to
+deploy the Worker: **the dashboard** (a website, no installs, recommended if
+you don't already have Node/Wrangler set up) or **the command line** (faster
+if you do). Both end up in the same place. Do one, not both.
 
 ### 1. Get a Groq key
 
-Sign in at <https://console.groq.com>, create an API key, copy it.
+Sign in at <https://console.groq.com>, create an API key, copy it somewhere
+safe for a minute — Groq only shows it to you once.
 
-### 2. Deploy the Worker
+### 2a. Deploy via the dashboard (no command line)
+
+1. Go to <https://dash.cloudflare.com>, sign up free if you don't have an
+   account, and open **Workers & Pages** in the left sidebar.
+2. Click **Create**, then **Create Worker**. Give it a name (e.g.
+   `ai-atc-parse` — this becomes part of the URL) and click **Deploy** to
+   create it with the placeholder "Hello World" code; you'll replace that
+   next.
+3. Click **Edit code** to open the in-browser editor. Delete everything in
+   it, then paste in the entire contents of this repo's `parse.js` (copy it
+   from [the file on
+   GitHub](https://github.com/zakdxn/ai-atc/blob/claude/simulator-bugs-improvements-54zvvb/parse.js) —
+   use whichever branch is current for you once this is merged to `main`).
+   Click **Deploy** again to save it.
+4. Go to the Worker's **Settings** tab, then **Variables and Secrets**. Add
+   three:
+   - `GROQ_API_KEY` — paste your Groq key, and mark it **Secret** (encrypted,
+     never shown again after you save).
+   - `GROQ_MODEL` — plain text, value `openai/gpt-oss-20b`.
+   - `ALLOWED_ORIGINS` — plain text, see step 4 below for what to put here.
+   Save/deploy after adding them.
+5. The Worker's URL is shown at the top of its dashboard page, something like
+   `https://ai-atc-parse.YOUR-SUBDOMAIN.workers.dev`. Keep it.
+
+### 2b. Deploy via the command line, instead of 2a
 
 From the repo root (`parse.js` and `wrangler.toml` live here, no separate
 `worker/` subdirectory):
@@ -41,33 +69,29 @@ From the repo root (`parse.js` and `wrangler.toml` live here, no separate
 ```sh
 npx wrangler login
 npx wrangler deploy
-```
-
-Wrangler prints the URL it deployed to, something like
-`https://ai-atc-parse.YOUR-SUBDOMAIN.workers.dev`. Keep it.
-
-### 3. Give it the key
-
-```sh
 npx wrangler secret put GROQ_API_KEY
 ```
 
-Paste the key when prompted. It is stored encrypted and is never in the repo.
+`wrangler login` opens a browser tab to authorize; `deploy` prints the URL
+it deployed to; `secret put` prompts you to paste the key (stored encrypted,
+never in the repo). `GROQ_MODEL` and `ALLOWED_ORIGINS` are already in
+`wrangler.toml` as plain vars — edit them there and run `npx wrangler deploy`
+again to pick up changes, rather than `secret put` (that command is only for
+values meant to stay encrypted, like the API key).
 
-### 4. Tell it which origins may call it
+### 3. Tell it which origins may call it
 
-Edit `ALLOWED_ORIGINS` in `wrangler.toml` to your GitHub Pages origin, then
-`npx wrangler deploy` again. Mine is pre-filled as a guess:
+`ALLOWED_ORIGINS` is a comma-separated allowlist of exactly the origins
+(scheme + host, no path, no trailing slash) the Worker will accept calls
+from — it's a CORS check, not a real security boundary, but it stops casual
+misuse of your Groq quota from other sites. If the game is live at
+`https://zakdxn.github.io/ai-atc/`, the origin is `https://zakdxn.github.io`.
+Not live anywhere yet? Use `*` for now (allow anything) and tighten it once
+you know the real URL — a wrong-but-specific value just means the Worker
+silently refuses every call and the game falls back to its grammar, not a
+crash, but you won't get AI parsing until it's fixed.
 
-```toml
-ALLOWED_ORIGINS = "https://zakdxn.github.io,http://localhost:8000"
-```
-
-Get it exactly right: scheme and host, no path, no trailing slash. If the
-game is at `https://zakdxn.github.io/ai-atc/`, the origin is
-`https://zakdxn.github.io`.
-
-### 5. Point the game at it
+### 4. Point the game at it
 
 In the browser console, on the game page:
 
@@ -87,7 +111,7 @@ const AI_PARSER = {
 
 That URL is fine to commit. The key is not, and is not here.
 
-### 6. Check it
+### 5. Check it
 
 ```js
 AI_PARSER.debug = true;
