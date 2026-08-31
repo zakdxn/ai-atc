@@ -1755,8 +1755,8 @@ function parseCommands(s) {
      blocks it as mixed content. Same-origin relative paths avoid this.
    ===================================================================== */
 const AI_PARSER = {
-  enabled: false,             // set true, or call aiParser(true), to use it
-  url: "/api/parse",          // same-origin function in production
+  enabled: true,              // set false, or call aiParser(false), to disable it
+  url: "https://ai-atc-parse.zdaiatc.workers.dev",   // deployed Cloudflare Worker, see WORKER.md
   timeoutMs: 2500,            // a frequency cannot wait longer than this
   debug: false,
 };
@@ -1816,8 +1816,9 @@ async function aiParseTransmission(raw, addressee, handled) {
     }
     const data = await res.json();
     if (AI_PARSER.debug) {
-      console.log(`LLM parser ${ms} ms`, data && data.intents);
-      sysLog(`LLM parser ${ms} ms, ${(data && data.intents || []).length} intent(s).`);
+      console.log(`LLM parser ${ms} ms`, data);
+      sysLog(`LLM parser ${ms} ms, ${(data && data.intents || []).length} intent(s)` +
+        (data && data.error ? `, error: ${data.error}` : "") + ".");
     }
     AI_PARSER.lastMs = ms;
     if (!data || !Array.isArray(data.intents) || !data.intents.length) return false;
