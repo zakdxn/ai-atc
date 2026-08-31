@@ -7,7 +7,7 @@
 
    The game calls this only for things its built-in grammar could not
    account for, so this is the open-ended half of the parser, not the hot
-   path. See worker/README.md for deployment.
+   path. See WORKER.md (repo root) for deployment.
    ===================================================================== */
 
 /* Origins allowed to call this. Add your GitHub Pages origin and any custom
@@ -168,7 +168,10 @@ export default {
       aircraft,
     });
 
-    const model = (env && env.GROQ_MODEL) || "llama-3.1-8b-instant";
+    /* llama-3.1-8b-instant (the old fallback here) was deprecated by Groq in
+       June 2026 and fully shut off in mid-August 2026 -- this only matters
+       if GROQ_MODEL somehow isn't set, since wrangler.toml normally sets it. */
+    const model = (env && env.GROQ_MODEL) || "openai/gpt-oss-20b";
     let res;
     try {
       res = await fetch(GROQ_URL, {

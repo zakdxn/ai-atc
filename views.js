@@ -347,6 +347,22 @@ function labelFits(x, y, w, h) {
   return true;
 }
 
+/* Real fields get a full taxi route to every runway end (so a dynamic
+   reassignment always has a route ready), but only a couple of those are
+   actually in play in any given session. Drawing all of them at once
+   turns the field into a spiderweb of routes to runways nobody is using
+   this session, which is most of why the ground picture reads as
+   incoherent clutter rather than an ATC display. Centrelines and hold
+   bars only paint the ones a controller would actually care about right
+   now: the active arrival/departure runway, plus wherever traffic has
+   actually been sent. */
+function activeTaxiKeys() {
+  const ids = new Set([G.arrRwy.id, G.depRwy.id]);
+  for (const ac of G.aircraft) if (!ac.remove && ac.rwy) ids.add(ac.rwy.id);
+  return new Set(Object.keys(G.fac.taxi || {}).filter(k =>
+    ids.has(k.startsWith("in_") ? k.slice(3) : k)));
+}
+
 function drawPavement(W2S, scale, TH) {
   LBL_TAKEN = [];
   if (G.fac.real && G.fac.pav) {
@@ -362,6 +378,18 @@ function drawPavement(W2S, scale, TH) {
     };
     /* 1. aprons and stands */
     for (const p of G.fac.pav.apr) fill(p, TH.ramp);
+    /* A handful of real fields (KATL, KSLC, KMEM, PHNL as of this writing)
+       have no apron polygons in the extracted apt.dat data at all, even
+       though they otherwise render fine. Without this, gate-parked
+       aircraft there sit in open teal void with nothing marking a ramp —
+       "gates make no sense" in its most literal form. Give them the same
+       simple ramp block the fully-synthetic fields already get. */
+    if (!G.fac.pav.apr.length) {
+      const [gx, gy] = W2S(G.fac.gates.anchor);
+      const rw = Math.max(46, 0.55 * scale), rh = Math.max(26, 0.32 * scale);
+      ctx.fillStyle = TH.ramp;
+      ctx.fillRect(gx - rw / 2, gy - rh / 2, rw, rh);
+    }
     /* 2. taxiway surface as one continuous shape, no per-piece outlines */
     for (const p of G.fac.pav.twy) fill(p, TH.taxi);
     /* 3. painted taxiway centrelines along the routes actually in use */
@@ -369,7 +397,7 @@ function drawPavement(W2S, scale, TH) {
       ctx.strokeStyle = TH.centreline;
       ctx.lineWidth = Math.max(1.2, scale * 0.004);
       ctx.lineCap = "round"; ctx.lineJoin = "round";
-      for (const key of Object.keys(G.fac.taxi || {})) {
+      for (const key of activeTaxiKeys()) {
         const t = G.fac.taxi[key];
         const pts = key.startsWith("in_") ? [t.exit, ...t.path] : [G.fac.gates.anchor, ...t.path];
         ctx.beginPath();
@@ -493,7 +521,7 @@ function drawHoldBars(W2S, scale, TH) {
     const hw = Math.max(r.w || 0.025, 0.018) / 2 + 0.012;
     const ux = Math.sin(d2r(r.hdg)), uy = Math.cos(d2r(r.hdg));
     const px = Math.cos(d2r(r.hdg)), py = -Math.sin(d2r(r.hdg));
-    for (const key of Object.keys(G.fac.taxi || {})) {
+    for (const key of activeTaxiKeys()) {
       const t = G.fac.taxi[key];
       const pts = key.startsWith("in_") ? [t.exit, ...t.path] : [G.fac.gates.anchor, ...t.path];
       for (const p of pts) {

@@ -513,11 +513,17 @@ function aiGND(ac) {
         `${ac.spoken()}, roger the delay, taxi back to gate ${ac.gate.toLowerCase()}.`,
         `${ac.spoken()}, taxi back to the ramp, gate ${ac.gate.toLowerCase()}.`
       ]));
-      ac.state = "taxiIn"; 
+      ac.state = "taxiIn";
       ac.stateT = 0;
-      // Route them directly to the ramp anchor (the penalty box logic ensures they won't hit head-on traffic)
-      ac.taxiPath = [{ x: G.fac.gates.anchor.x + rnd(-0.1, 0.1), y: G.fac.gates.anchor.y + rnd(-0.06, 0.06) }];
-      ac.taxiIdx = 0; 
+      /* Retrace the same taxiway it came out on, in reverse, back to the
+         ramp — cutting straight across the field to the gate anchor point
+         is a teleport in every way that matters even though it takes time
+         to arrive, since it ignores the taxiway network entirely. */
+      const traveled = (ac.taxiPath || []).slice(0, ac.taxiIdx + 1);
+      const backPath = traveled.slice(0, -1).reverse();
+      backPath.push({ x: G.fac.gates.anchor.x + rnd(-0.1, 0.1), y: G.fac.gates.anchor.y + rnd(-0.06, 0.06) });
+      ac.taxiPath = backPath;
+      ac.taxiIdx = 0;
       ac.ias = 15;
       G.hooks.strips();
     }
@@ -1573,7 +1579,8 @@ const PHRASE_FIX = [
   [/\bcleared?\s+for\s+take\s*off\b/g, "cleared for takeoff"],
   [/\bcontact\s+to(?:wer|ward)\b/g, "contact tower"],
   [/\bread\s*back\s+correct(?:ed)?\b/g, "read back correct"],
-  [/\bpush\s*back\s+approved?\b/g, "pushback approved"],
+  [/\bbush\s*back\b/g, "pushback"],           // STT mishears the p as a b
+  [/\bpush\s+back\b/g, "pushback"],           // normalize the two-word form before matching
 ];
 
 function fixPhrases(s) {
@@ -1661,7 +1668,7 @@ const CMD_PATTERNS = [
   { t: "ils",   re: /\bcleared\s+(?:for\s+)?(?:the\s+)?ils\b(?:(?:\s+approach)?\s+runway\s+(\d{1,2}[lrc]?))?|\bcleared\s+approach\b|\bils\b(?:\s+(\d{1,2}[lrc]?))?/, f: m => ({ rwy: (m[1] || m[2] || "").toUpperCase() }) },
   { t: "rbbad", re: /\bread\s?back\s+(?:incorrect|is\s+incorrect|not\s+correct|wrong)\b|\bnegative\s+read\s?back\b/, f: () => ({}) },
   { t: "rbok",  re: /\bread\s?back\s+(?:is\s+)?correct\b|\brbc\b|\bcorrect\s+read\s?back\b/, f: () => ({}) },
-  { t: "push",  re: /\bpush(?:back)?\s+approved\b|\bpa\b/,                           f: () => ({}) },
+  { t: "push",  re: /\bcleared\s+(?:for\s+|to\s+)?push(?:back)?(?:\s+and\s+start)?\b|\bpush(?:back)?(?:\s+and\s+start)?\s+(?:is\s+)?approved\b|\bapproved\s+(?:for\s+)?push(?:back)?\b|\bpush\s+at\s+will\b|\bpa\b/, f: () => ({}) },
   { t: "hold",  re: /\bhold\s+position\b|\bhp\b/,                                    f: () => ({}) },
   { t: "seq",   re: /(?:\b(?:you(?:'re|\s+are)?\s+)?number\s+|#\s*)(\d{1,2})\b/,     f: m => ({ n: +m[1] }) },
   { t: "follow", re: /\bfollow\s+(?:the\s+)?([a-z0-9]+(?:\s+[a-z0-9]+){0,3}?)\s*(?:,|$|(?=\bthen\b)|(?=\band\b))/, f: m => ({ who: m[1].trim() }) },
@@ -1669,7 +1676,7 @@ const CMD_PATTERNS = [
   { t: "expect", re: /\bexpect\s+(?:runway\s+)?(\d{1,2}[lrc]?)\b/,                    f: m => ({ rwy: m[1].toUpperCase() }) },
   { t: "cont",  re: /\bcontinue(?:\s+taxi)?\b/,                                      f: () => ({}) },
   { t: "taxi",  re: /\btaxi\b(?:\s+to)?(?:\s+runway\s+(\d{1,2}[lrc]?))?(?:\s+via[\w\s]*)?|\btx\b(?:\s+(\d{1,2}[lrc]?))?/, f: m => ({ rwy: (m[1] || m[2] || "").toUpperCase() }) },
-  { t: "luaw",  re: /\bline\s*up\s+(?:and|end|n)?\s+(?:wait|weight|way)\b(?:\s+runway\s+(\d{1,2}[lrc]?))?|\bluaw\b(?:\s+(\d{1,2}[lrc]?))?/, f: m => ({ rwy: (m[1] || m[2] || "").toUpperCase() }) },
+  { t: "luaw",  re: /\b(?:taxi\s+into\s+)?position\s+and\s+hold\b(?:\s+runway\s+(\d{1,2}[lrc]?))?|\bline\s*up\s+(?:and|end|n)?\s+(?:wait|weight|way)\b(?:\s+runway\s+(\d{1,2}[lrc]?))?|\bluaw\b(?:\s+(\d{1,2}[lrc]?))?/, f: m => ({ rwy: (m[1] || m[2] || m[3] || "").toUpperCase() }) },
   { t: "cto",   re: /\bcleared\s+for\s+takeoff\b(?:\s+runway\s+(\d{1,2}[lrc]?))?|\bcto\b(?:\s+(\d{1,2}[lrc]?))?/, f: m => ({ rwy: (m[1] || m[2] || "").toUpperCase() }) },
   { t: "ctl",   re: /\bcleared\s+to\s+land\b(?:\s+runway\s+(\d{1,2}[lrc]?))?|\bctl\b(?:\s+(\d{1,2}[lrc]?))?/, f: m => ({ rwy: (m[1] || m[2] || "").toUpperCase() }) },
   { t: "ga",    re: /\bgo\s+around\b|\bga\b/,                                        f: () => ({}) },
@@ -1937,7 +1944,7 @@ function aiUnmodelled(ac, action, val) {
       `Wilco, ${ac.spoken()}.`,
     ]));
   }, rnd(700, 1400));
-  sysLog(`${ac.cs} acknowledged "${action}". The engine has no rule for that, so nothing changed on the scope.`);
+  sysLog(`${ac.cs} acknowledged "${said}". The engine has no rule for that, so nothing changed on the scope.`);
 }
 
 /* ---- IFR clearance grading (player on DEL) ---- */
@@ -2075,6 +2082,14 @@ function verdictReadback(ac, ok) {
 function execOps(ac, ops) {
   const F = G.fac;
   const parts = [], unable = [];
+  /* A handoff op (toTwr/toGnd/toDep/toApp/toCtr) below reassigns ac.owner
+     mid-loop, before the combined readback at the bottom is built. Without
+     this, that final ac.say() would default to the aircraft's *new* owner
+     and the "Ground, good day" readback would land on a frequency you, the
+     controller who just gave the instruction, are no longer listening to —
+     it would look like the handoff silently ate your instruction. Reply on
+     the frequency the instruction was actually issued on. */
+  const replyChan = ac.owner;
   for (const op of ops) {
     switch (op.t) {
       case "hdg": {
@@ -2407,11 +2422,11 @@ function execOps(ac, ops) {
       case "rbbad": verdictReadback(ac, false); return;
     }
   }
-  if (!parts.length && !unable.length) { ac.say(`Say again for ${ac.spoken()}?`); return; }
+  if (!parts.length && !unable.length) { ac.say(`Say again for ${ac.spoken()}?`, replyChan); return; }
   let text = parts.join(", ");
   if (unable.length) text += (text ? ", and " : "") + "unable " + unable.join(", and ");
   text += `, ${ac.spoken()}.`;
-  ac.say(text.charAt(0).toUpperCase() + text.slice(1));
+  ac.say(text.charAt(0).toUpperCase() + text.slice(1), replyChan);
 }
 
 /* the player keyed the mic */

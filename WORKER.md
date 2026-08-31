@@ -35,7 +35,8 @@ Sign in at <https://console.groq.com>, create an API key, copy it.
 
 ### 2. Deploy the Worker
 
-From this `worker/` directory:
+From the repo root (`parse.js` and `wrangler.toml` live here, no separate
+`worker/` subdirectory):
 
 ```sh
 npx wrangler login
@@ -115,16 +116,23 @@ this is for local development, not for the deployed site.
 
 ## Choosing a model
 
-`GROQ_MODEL` in `wrangler.toml` defaults to `llama-3.1-8b-instant`. This job
-is short structured extraction, not conversation, so a small fast model is
-the right pick and a large one mostly buys latency.
+`GROQ_MODEL` in `wrangler.toml` defaults to `openai/gpt-oss-20b`. This job is
+short structured extraction, not conversation, so a small fast model is the
+right pick and a large one mostly buys latency — but earlier testing on this
+project found `llama-3.1-8b-instant` (Groq's old small model, deprecated
+June 2026 and shut off entirely by mid-August 2026) too unreliable at
+following the JSON schema, so if you see the model ignoring `hdg`/`alt`/`spd`
+or otherwise mangling the response shape, switch `GROQ_MODEL` to
+`openai/gpt-oss-120b` — slower, but far more consistent about sticking to
+the schema. It is a plain var, not a secret: edit `GROQ_MODEL` in
+`wrangler.toml` and run `npx wrangler deploy` again to pick it up.
 
-I could not check Groq's live model list from where I built this, so
-**verify the ID against <https://console.groq.com/docs/models>** before you
-rely on it. If the model name is wrong the Worker returns an empty intent
-list with an `error` field, the game falls back to its grammar, and nothing
-breaks — but you will not get any AI parsing until it is fixed. Turn on
-`AI_PARSER.debug` and watch for a `groq 404`.
+**Groq's model lineup changes over time — verify the current ID against
+<https://console.groq.com/docs/models> before you rely on it.** If the model
+name is wrong the Worker returns an empty intent list with an `error` field,
+the game falls back to its grammar, and nothing breaks — but you will not
+get any AI parsing until it is fixed. Turn on `AI_PARSER.debug` and watch for
+a `groq 404` (unknown model) or `groq 400` (deprecated/decommissioned).
 
 ---
 
@@ -199,6 +207,6 @@ Anything else is still accepted: the pilot acknowledges it and the comms log
 records that nothing on the scope changed. That is deliberate, so a plausible
 reply never hides the fact that no state moved.
 
-`worker/parse.js` keeps the action list in `ACTIONS` and the instructions in
+`parse.js` keeps the action list in `ACTIONS` and the instructions in
 `SYSTEM_PROMPT`. If you add an op to `AI_ACTIONS` in `engine.js`, add it in
 both places here too.

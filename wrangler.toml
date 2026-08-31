@@ -10,7 +10,12 @@ ALLOWED_ORIGINS = "https://zakdxn.github.io,http://localhost:8000,http://127.0.0
 
 # Check Groq's current model list and set whichever you prefer. A small fast
 # model is the right choice here: this is extraction, not conversation.
-GROQ_MODEL = "llama-3.1-8b-instant"
+# llama-3.1-8b-instant (the old default here) was deprecated by Groq in
+# June 2026 and fully shut off in mid-August 2026 -- if this Worker starts
+# returning "groq 400"/"groq 404", that is the first thing to check against
+# https://console.groq.com/docs/models. gpt-oss-120b is the sturdier but
+# slower fallback if gpt-oss-20b ever mangles the JSON schema (WORKER.md).
+GROQ_MODEL = "openai/gpt-oss-20b"
 
 # Optional hard stop on calls per day. Needs the KV namespace below to be
 # uncommented and created, otherwise it is ignored.
