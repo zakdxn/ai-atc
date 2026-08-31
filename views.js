@@ -768,7 +768,26 @@ canvas.addEventListener("dblclick", () => {
 /* ---------- taxiway labels ----------
    Real taxiway names are not present in the open dataset, so each
    significant strip of pavement is lettered per facility (stable within
-   a field) and labelled along its length, the way a chart would. */
+   a field) and labelled along its length, the way a chart would.
+
+   Earlier this approximated every polygon as an axis-aligned bounding box
+   and only ever merged/labelled along a pure horizontal or vertical line.
+   That is fine at a field with N/S-E/W taxiways, but most real fields
+   (JFK included, with runways at 130/220 degrees) have taxiways running
+   at every angle, and a diagonal strip's bounding box is mostly empty
+   space -- so the label spots landed wherever that box's math put them,
+   nowhere near the actual pavement. Labels now key off each polygon's own
+   long axis (its two farthest-apart vertices) instead of its box, so a
+   diagonal taxiway gets a diagonal label line lying on the real pavement. */
+function farthestPair(flat) {
+  let a = 0, b = 0, best = -1;
+  const n = flat.length / 2;
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+    const d = Math.hypot(flat[i * 2] - flat[j * 2], flat[i * 2 + 1] - flat[j * 2 + 1]);
+    if (d > best) { best = d; a = i; b = j; }
+  }
+  return { a: { x: flat[a * 2], y: flat[a * 2 + 1] }, b: { x: flat[b * 2], y: flat[b * 2 + 1] }, span: best };
+}
 function drawTaxiLabels(W2S, scale, TH) {
   const F = G.fac;
   if (!F.pav || !F.pav.twy.length) return;
@@ -779,40 +798,51 @@ function drawTaxiLabels(W2S, scale, TH) {
     const L = ["A", "B", "C", "D", "E", "F", "G", "H", "J", "K", "L", "M", "N", "P", "R", "S", "T", "V", "W", "Y", "Z"];
     const segs = [];
     F.pav.twy.forEach(flat => {
-      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-      for (let k = 0; k < flat.length; k += 2) {
-        x0 = Math.min(x0, flat[k]); x1 = Math.max(x1, flat[k]);
-        y0 = Math.min(y0, flat[k + 1]); y1 = Math.max(y1, flat[k + 1]);
-      }
-      const w = x1 - x0, h = y1 - y0, span = Math.max(w, h);
+      const { a, b, span } = farthestPair(flat);
       if (span < 0.22) return;                       // ignore fillets and stubs
-      if (Math.min(w, h) / span > 0.6) return;       // ignore blobby aprons
-      segs.push({ span, horiz: w >= h,
-                  cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, x0, y0, x1, y1 });
+      /* perpendicular extent, to reject blobby aprons masquerading as a strip */
+      const dx = b.x - a.x, dy = b.y - a.y, ang = Math.atan2(dy, dx);
+      const nx = -Math.sin(ang), ny = Math.cos(ang);
+      let wLo = Infinity, wHi = -Infinity;
+      for (let k = 0; k < flat.length; k += 2) {
+        const w = (flat[k] - a.x) * nx + (flat[k + 1] - a.y) * ny;
+        wLo = Math.min(wLo, w); wHi = Math.max(wHi, w);
+      }
+      if ((wHi - wLo) / span > 0.6) return;
+      segs.push({ a, b, span, ang: ((ang % Math.PI) + Math.PI) % Math.PI,
+                  mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, pts: [a, b] });
     });
-    segs.sort((a, b) => b.span - a.span);
-    /* merge collinear neighbours into one corridor */
+    segs.sort((s1, s2) => s2.span - s1.span);
+    /* merge collinear neighbours (same undirected angle, small perpendicular
+       offset from the corridor's own line) into one corridor */
+    const angDist = (p, q) => { const d = Math.abs(p - q); return Math.min(d, Math.PI - d); };
     const corridors = [];
     for (const s of segs) {
-      const m = corridors.find(c => c.horiz === s.horiz &&
-        Math.abs((s.horiz ? s.cy : s.cx) - (c.horiz ? c.cy : c.cx)) < 0.06);
-      if (m) {
-        m.x0 = Math.min(m.x0, s.x0); m.x1 = Math.max(m.x1, s.x1);
-        m.y0 = Math.min(m.y0, s.y0); m.y1 = Math.max(m.y1, s.y1);
-        m.span = Math.max(m.x1 - m.x0, m.y1 - m.y0);
-      } else if (corridors.length < L.length) {
-        corridors.push({ ...s });
-      }
+      const m = corridors.find(c => {
+        if (angDist(c.ang, s.ang) > 0.21) return false;      // ~12 degrees
+        const nx = -Math.sin(c.ang), ny = Math.cos(c.ang);
+        const perp = (s.mid.x - c.mid.x) * nx + (s.mid.y - c.mid.y) * ny;
+        return Math.abs(perp) < 0.06;
+      });
+      if (m) m.pts.push(s.a, s.b);
+      else if (corridors.length < L.length) corridors.push({ ang: s.ang, mid: s.mid, pts: [s.a, s.b] });
     }
-    F.twyLabels = corridors.map((c, i) => ({ ...c, name: L[i] }));
+    /* the corridor's own extreme points, not a bounding box, decide where
+       its labels sit -- guaranteed to lie along pavement that exists */
+    F.twyLabels = corridors.map((c, i) => {
+      let flat = [];
+      for (const p of c.pts) flat.push(p.x, p.y);
+      const { a, b, span } = farthestPair(flat);
+      return { a, b, span, name: L[i] };
+    });
   }
   ctx.font = "bold " + mono(11);
   for (const t of F.twyLabels) {
     if (t.span * scale < 70) continue;               // too small to letter here
     /* two marks along the corridor, like a chart */
-    const spots = t.horiz
-      ? [{ x: t.x0 + (t.x1 - t.x0) * 0.28, y: t.cy }, { x: t.x0 + (t.x1 - t.x0) * 0.72, y: t.cy }]
-      : [{ x: t.cx, y: t.y0 + (t.y1 - t.y0) * 0.28 }, { x: t.cx, y: t.y0 + (t.y1 - t.y0) * 0.72 }];
+    const spots = [0.28, 0.72].map(f => ({
+      x: t.a.x + (t.b.x - t.a.x) * f, y: t.a.y + (t.b.y - t.a.y) * f,
+    }));
     for (const p of spots) {
       const [x, y] = W2S(p);
       if (x < 14 || y < 14 || x > V.w - 14 || y > V.h - 14) continue;
