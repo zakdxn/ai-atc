@@ -336,6 +336,17 @@ G.hooks.log = (chan, who, cls, text) => {
 };
 G.hooks.strips = () => { renderStrips(); renderCheat(); };
 G.hooks.score = () => { syncCareer(); renderHeader(); };
+/* A transmission the grammar couldn't fully account for can be waiting on
+   the LLM endpoint for up to a couple seconds with nothing on screen
+   changing in the meantime -- easy to mistake for the game having hung.
+   Counted rather than boolean since more than one transmission can be
+   in flight to the endpoint at once. */
+let aiPendingCount = 0;
+G.hooks.aiPending = on => {
+  aiPendingCount = Math.max(0, aiPendingCount + (on ? 1 : -1));
+  const btn = document.getElementById("btnSend");
+  if (btn) btn.textContent = aiPendingCount > 0 ? "..." : "XMIT";
+};
 
 /* ---------------- SOPs ---------------- */
 function sopHtml() {

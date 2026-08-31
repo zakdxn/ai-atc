@@ -65,7 +65,7 @@ const G = {
   nextArr: 20, nextDep: 6, nextEvent: 120,
   rushPhase: rnd(0, Math.PI * 2),
   density: "med",
-  hooks: { log: () => {}, strips: () => {}, score: () => {}, notify: () => {} },
+  hooks: { log: () => {}, strips: () => {}, score: () => {}, notify: () => {}, aiPending: () => {} },
 };
 
 /* =====================================================================
@@ -1821,6 +1821,10 @@ async function aiParseTransmission(raw, addressee, handled) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), AI_PARSER.timeoutMs);
   const t0 = performance.now();
+  /* This can take up to timeoutMs (2.5s) with nothing else on screen saying
+     why -- easy to mistake for the game having hung. Give the UI something
+     to show while it's outstanding. */
+  G.hooks.aiPending(true);
   try {
     const res = await fetch(AI_PARSER.url, {
       method: "POST",
@@ -1860,6 +1864,7 @@ async function aiParseTransmission(raw, addressee, handled) {
     return false;
   } finally {
     clearTimeout(timer);
+    G.hooks.aiPending(false);
   }
 }
 
