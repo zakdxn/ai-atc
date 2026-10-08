@@ -47,8 +47,7 @@ safe for a minute — Groq only shows it to you once.
    next.
 3. Click **Edit code** to open the in-browser editor. Delete everything in
    it, then paste in the entire contents of this repo's `parse.js` (copy it
-   from [the file on
-   GitHub](https://github.com/zakdxn/ai-atc/blob/main/parse.js) —
+   from [the file on GitHub](https://github.com/zakdxn/ai-atc/blob/main/parse.js) —
    use whichever branch is current for you once this is merged to `main`).
    Click **Deploy** again to save it.
 4. Go to the Worker's **Settings** tab, then **Variables and Secrets**. Add
