@@ -1644,10 +1644,9 @@ function parseCommands(s) {
 }
 
 const AI_PARSER = {
-  enabled: true,              // set false, or call aiParser(false), to disable it
-  url: "https://ai-atc-parse.zdaiatc.workers.dev",   // deployed Cloudflare Worker, see WORKER.md
-  timeoutMs: 2500,            // a frequency cannot wait longer than this
-  debug: false,
+  enabled: true,
+  url: "https://ai-atc-parse.zdaiatc.workers.dev",
+  timeoutMs: 2500,
 };
 
 function aiParser(on, url) {
