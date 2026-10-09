@@ -49,8 +49,8 @@ function renderMenu() {
     <h4>1 · CHOOSE YOUR ARTCC (all ${FACILITIES.length} VATUSA facilities)</h4>
     <div class="facgrid">${FACILITIES.map((f, i) => `
       <div class="faccard ${i === selFac ? "sel" : ""}" data-f="${i}">
-        <div class="artcc">${f.artcc} · ${f.artccName}</div>
-        <div class="ap">${f.icao} · ${f.apName}</div>
+        <div class="artcc">${f.artcc} ·${f.artccName}</div>
+        <div class="ap">${f.icao} ·${f.apName}</div>
         <div class="meta">${f.tracon}</div>
       </div>`).join("")}</div>
 
@@ -58,14 +58,14 @@ function renderMenu() {
     <div class="posgrid">${POSITIONS.map(p => {
       const ok = posUnlocked(p);
       return `<div class="poscard ${p === selPos ? "sel" : ""} ${ok ? "" : "locked"}" data-p="${p}">
-        <div class="pn">${p} ${ok ? "" : "🔒"}</div>
-        <div class="pr">${POS_NAME[p]}<br>requires ${POS_RATING[p]}</div>
+        <div class="pn">${p}${ok ? "" : "🔒"}</div>
+        <div class="pr">${POS_NAME[p]}<br>requires${POS_RATING[p]}</div>
       </div>`;
     }).join("")}</div>
 
     <div class="ratebox">
       Your rating: <b>${r.id} · ${r.name}</b> · ${career.pts} pts
-      <br><span class="dimtxt">${RATINGS.map(rt => `${rt.id} ${rt.pts}+`).join(" · ")}. Earn points by working traffic
+      <br><span class="dimtxt">${RATINGS.map(rt => `${rt.id}${rt.pts}+`).join(" · ")}. Earn points by working traffic
       correctly, modeled on <a href="https://vatsim.net/docs/basics/becoming-a-controller/" target="_blank" style="color:var(--cyan)">VATSIM's controller ratings</a>.</span>
       <br><label style="cursor:pointer"><input type="checkbox" id="sandbox" ${career.sandbox ? "checked" : ""}> Sandbox: unlock all positions</label>
     </div>
@@ -228,7 +228,7 @@ function renderCheat() {
     ],
     GND: [
       ["pushback approved", "they are at the gate asking to push"],
-      [`taxi runway ${depId} via ${depRoute}, hold short`, "departures. Just say "taxi" and the route is filled in"],
+      [`taxi runway ${depId} via ${depRoute}, hold short`, "departures. Just say “taxi” and the route is filled in"],
       [`taxi to the gate via ${arrRoute}`, "arrivals off the runway"],
       ["monitor ground, I'll call you for taxi", "STOPS THEM CALLING. You initiate taxi in your order."],
       ["number 2", "sequence them so they stop calling"],
@@ -247,10 +247,10 @@ function renderCheat() {
     APP: [
       ["turn left heading 270, descend and maintain 4000", "vectors to the final"],
       ["reduce speed 210", "spacing"],
-      [`cleared ILS runway ${arrId}`, "30 degrees or less, at or below 3000 by 10 miles"],
-      ["contact tower", "established and inside 6 miles"],
+      [`cleared ILS runway ${arrId}`, "30 degrees or less, at or below 3000 by 10 nm final"],
+      ["contact tower", "established and inside 6 nm"],
       ["climb and maintain 12000, direct [exit fix]", "departures"],
-      ["contact center", "above 4000 and 12 miles out"],
+      ["contact center", "above 4000 and 12 nm out"],
     ],
     CTR: [
       ["descend via", "arrivals on the STAR"],
@@ -290,7 +290,7 @@ function renderIntercom() {
       `<button class="llreq" data-r="${k}">${v.label}</button>`).join("") +
     `</div>` +
     (last.length ? `<div class="llog">${last.map(r =>
-      `<div class="${r.cls}"><b>${escapeHtml(r.who)}:</b> ${escapeHtml(r.text)}</div>`).join("")}</div>` : "");
+      `<div class="${r.cls}"><b>${escapeHtml(r.who)}:</b>${escapeHtml(r.text)}</div>`).join("")}</div>` : "");
   el.querySelectorAll(".llpos").forEach(b => b.onclick = () => { llTarget = b.dataset.i; renderIntercom(); });
   el.querySelectorAll(".llreq").forEach(b => b.onclick = () => {
     intercom(llTarget, b.dataset.r);
@@ -343,7 +343,7 @@ function sopHtml() {
       After rollout: <code>contact ground</code>.</td></tr>
       <tr><td>Runway protection</td><td>${G.arrRwy.id === G.depRwy.id
         ? "Single-runway ops: one aircraft on the runway at a time, no takeoff clearance with an arrival inside about 6 nm."
-        : `Independent parallel ops: ${G.arrRwy.id} landings, ${G.depRwy.id} departures.`}</td></tr>`,
+        : `Independent parallel ops: ${G.arrRwy.id} landings,${G.depRwy.id} departures.`}</td></tr>`,
     APP: `<tr><td>Arrivals</td><td>Descend to 3,000 to 4,000, vector to intercept the runway <b>${G.arrRwy.id}</b> localizer
       at 30 degrees or less, at or below 3,000 by 10 nm final, then <code>cleared ILS</code>.
       Established and inside 6 nm: <code>contact tower</code>.</td></tr>
@@ -369,7 +369,7 @@ function sopHtml() {
       <tr><td>Frequencies</td><td>DEL ${F.freqs.DEL} · GND ${F.freqs.GND} · TWR ${F.freqs.TWR} · APP ${F.freqs.APP} · CTR ${F.freqs.CTR}</td></tr>
     </table>
     <h4>DEPARTURE PROCEDURES (SIDs) IN USE</h4>
-    <table>${F.sids.map(s => `<tr><td>${s.name}</td><td>exit gates: ${s.exits.join(", ")}</td></tr>`).join("")}</table>
+    <table>${F.sids.map(s => `<tr><td>${s.name}</td><td>exit gates:${s.exits.join(", ")}</td></tr>`).join("")}</table>
     <h4>ARRIVALS (STARs)</h4>
     <p class="dimtxt">${F.stars.join(" · ")} via entry fixes ${F.entryFixes.join(", ")}. Arrivals check on descending via the STAR.</p>
     <h4>YOUR POSITION · ${ctrlCallsign(G.playerPos)} (${POS_NAME[G.playerPos].toUpperCase()})</h4>
